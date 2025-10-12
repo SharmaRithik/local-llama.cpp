@@ -1,11 +1,11 @@
 enable f16;
 
-const WORKGROUP_SIZE_X: u32 = 4u;
+const WORKGROUP_SIZE_X: u32 = 8u;
 const WORKGROUP_SIZE_Y: u32 = 16u;
-const TOTAL_WORKGROUP_SIZE: u32 = 64u;
-const TILE_X: u32 = 1u;
-const TILE_Y: u32 = 1u;
-const TILE_K: u32 = 16u;
+const TOTAL_WORKGROUP_SIZE: u32 = 128u;  // Reduced for better occupancy
+const TILE_X: u32 = 1u;  // Minimal per-thread work for flexibility
+const TILE_Y: u32 = 2u;  // Small tiles reduce register pressure
+const TILE_K: u32 = 16u;  // Balanced for memory bandwidth
 const VECTOR_WIDTH: u32 = 4u;
 
 fn load_src0_scalar(idx: u32) -> f32 {
@@ -97,8 +97,8 @@ struct MulMatParams {
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
-var<workgroup> A_shared: array<f32, 256>;
-var<workgroup> B_shared: array<f32, 64>;
+var<workgroup> A_shared: array<f32, 512>;  // WORKGROUP_SIZE_Y * TILE_Y * TILE_K = 16 * 2 * 16
+var<workgroup> B_shared: array<f32, 128>;  // TILE_K * WORKGROUP_SIZE_X * TILE_X = 16 * 8 * 1
 
 fn get_local_x(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_X;
@@ -108,7 +108,7 @@ fn get_local_y(thread_id: u32) -> u32 {
     return thread_id / WORKGROUP_SIZE_X;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(128)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
         @builtin(local_invocation_id) local_id: vec3<u32>) {
     

@@ -24,21 +24,21 @@ struct MulMatParams {
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>;
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
-const WORKGROUP_SIZE_X: u32 = 16u;
-const WORKGROUP_SIZE_Y: u32 = 16u;
-const TOTAL_WORKGROUP_SIZE: u32 = 256u;
+const WORKGROUP_SIZE_X: u32 = 64u;  // Simplified layout for GEMV
+const WORKGROUP_SIZE_Y: u32 = 2u;   // Minimal Y since GEMV often has M=1
+const TOTAL_WORKGROUP_SIZE: u32 = 128u;
 const TILE_K: u32 = 16u;
 
-const WPT_X: u32 = 4u;
-const WPT_Y: u32 = 4u;
+const WPT_X: u32 = 1u;  // 1 output per thread (wpt=1)
+const WPT_Y: u32 = 1u;  // 1 output per thread (wpt=1)
 
 const VECTOR_WIDTH: u32 = 4u;
 
-const TILE_SIZE_X: u32 = WORKGROUP_SIZE_X * WPT_X;
-const TILE_SIZE_Y: u32 = WORKGROUP_SIZE_Y * WPT_Y;
+const TILE_SIZE_X: u32 = WORKGROUP_SIZE_X * WPT_X;  // 64*1 = 64
+const TILE_SIZE_Y: u32 = WORKGROUP_SIZE_Y * WPT_Y;  // 2*1 = 2
 
-var<workgroup> tile_src0: array<f32, TILE_K * TILE_SIZE_X>;
-var<workgroup> tile_src1: array<f32, TILE_K * TILE_SIZE_Y>;
+var<workgroup> tile_src0: array<f32, 1024>;  // TILE_K * TILE_SIZE_X = 16 * 64
+var<workgroup> tile_src1: array<f32, 32>;    // TILE_K * TILE_SIZE_Y = 16 * 2
 
 fn get_local_x(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_X;
@@ -48,7 +48,7 @@ fn get_local_y(thread_id: u32) -> u32 {
     return thread_id / WORKGROUP_SIZE_X;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(128)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>

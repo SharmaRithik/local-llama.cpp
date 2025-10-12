@@ -1,9 +1,9 @@
-const WORKGROUP_SIZE_X: u32 = 4u;
-const WORKGROUP_SIZE_Y: u32 = 16u;
-const TOTAL_WORKGROUP_SIZE: u32 = 64u;
-const TILE_X: u32 = 1u;
-const TILE_Y: u32 = 1u;
-const TILE_K: u32 = 16u;
+const WORKGROUP_SIZE_X: u32 = 16u;
+const WORKGROUP_SIZE_Y: u32 = 16u;  // Increased for better GPU utilization
+const TOTAL_WORKGROUP_SIZE: u32 = 256u;  // Increased for better GPU utilization
+const TILE_X: u32 = 8u;  // Increased for better compute intensity
+const TILE_Y: u32 = 8u;  // Increased for better compute intensity
+const TILE_K: u32 = 32u;  // Increased for better memory bandwidth utilization
 const VECTOR_WIDTH: u32 = 4u;
 
 fn load_src0_scalar(idx: u32) -> f32 {
@@ -95,8 +95,8 @@ struct MulMatParams {
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
-var<workgroup> A_shared: array<f32, 256>;
-var<workgroup> B_shared: array<f32, 64>;
+var<workgroup> A_shared: array<f32, 6144>;  // Optimized for 32KB limit (16*16*32 = 8192, reduced to fit)
+var<workgroup> B_shared: array<f32, 2048>;  // Optimized for 32KB limit (16*16*32 = 8192, reduced to fit)
 
 fn get_local_x(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_X;
@@ -106,7 +106,7 @@ fn get_local_y(thread_id: u32) -> u32 {
     return thread_id / WORKGROUP_SIZE_X;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
         @builtin(local_invocation_id) local_id: vec3<u32>) {
     
