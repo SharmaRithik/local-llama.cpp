@@ -824,12 +824,6 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                                           ggml_tensor *    src0,
                                           ggml_tensor *    src1,
                                           ggml_tensor *    dst) {
-    std::cout << "ggml_webgpu_mul_mat: src0 (" << ggml_type_name(src0->type) << "): [" << src0->ne[0] << " " << src0->ne[1]
-              << " " << src0->ne[2] << " " << src0->ne[3] << "], ";
-    std::cout << "src1 (" << ggml_type_name(src1->type) << "): [" << src1->ne[0] << " " << src1->ne[1] << " "
-              << src1->ne[2] << " " << src1->ne[3] << "], ";
-    std::cout << "dst (" << ggml_type_name(dst->type) << "): [" << dst->ne[0] << " " << dst->ne[1] << " " << dst->ne[2]
-              << " " << dst->ne[3] << "]\n";
     std::vector<uint32_t> params = {
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),
@@ -870,28 +864,28 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
     const uint32_t M = dst->ne[1];  // number of rows in result
     const uint32_t N = dst->ne[0];  // number of columns in result
     const bool is_gemv = (M == 1 || N == 1);
-    
+
     // Calculate workgroup count for element-based dispatch (used by template shader)
     uint32_t wg_x = (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
-    
+
     // Case 1: GEMM F16xF16
     if (!is_gemv && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
     }
-    
+
     // Case 2: GEMV F16xF16
     if (is_gemv && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
     }
-    
+
     // Case 3: GEMM F16xF32 - Use optimized shader for medium/large matrices, template for small
     if (!is_gemv && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {
         // Use optimized shader for matrices where both dimensions are >= 64
         // to ensure sufficient work for tiling and avoid edge cases with small/odd sizes
         if (M >= 64 && N >= 64) {
-            // OptimizedGEMMF16xF32: 8x16 workgroup, 1x2 tiles per thread = 8x32 per workgroup
-            uint32_t tiles_x = (N + 8 - 1) / 8;   // columns
-            uint32_t tiles_y = (M + 32 - 1) / 32;  // rows
+            // OptimizedGEMMF16xF32: 8x16 workgroup, 4x2 tiles per thread = 32x32 per workgroup
+            uint32_t tiles_x = (N + 32 - 1) / 32;   // columns
+            uint32_t tiles_y = (M + 64 - 1) / 64;  // rows
             uint32_t wg_x_optimized = tiles_x * tiles_y * dst->ne[2] * dst->ne[3];
             return ggml_backend_webgpu_build(ctx, ctx->mul_mat_pipeline[src0->type][src1->type], params, entries, wg_x_optimized);
         } else {
@@ -899,7 +893,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
         }
     }
-    
+
     // Case 4: GEMV F16xF32 - Use optimized shader for medium/large vectors, template for small
     if (is_gemv && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {
         // OptimizedGEMVF16xF32: 64x2 workgroup, 1x1 work per thread = 64x2 tiles (128 threads, wpt=1)
@@ -917,17 +911,17 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
         }
     }
-    
+
     // Case 5: GEMM F32xF32
     if (!is_gemv && src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
         return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
     }
-    
+
     // Case 6: GEMV F32xF32
     if (is_gemv && src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
         return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
     }
-    
+
     // Fallback: All other operations use element-based dispatch (template shaders)
     return ggml_backend_webgpu_build(ctx, ctx->mul_mat_pipeline[src0->type][src1->type], params, entries, wg_x);
 }
@@ -1644,10 +1638,10 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_pipeline[GGML_TYPE_F16][GGML_TYPE_F16],
                                 wgsl_OptimizedGEMMF16xF16, "mul_mat_gemm_f16_f16_optimized");
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_pipeline[GGML_TYPE_F16][GGML_TYPE_F32],
-                                wgsl_OptimizedGEMMF16xF32, "mul_mat_gemm_f16_f32_optimized");
+                                wgsl_gemm_fast, "mul_mat_gemm_f16_f32_optimized");
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_pipeline[GGML_TYPE_F32][GGML_TYPE_F32],
                                 wgsl_OptimizedGEMMF32xF32, "mul_mat_gemm_f32_f32_optimized");
-    
+
     // GEMV pipelines (M==1 or N==1) - use optimized GEMV shaders
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_gemv_pipeline[GGML_TYPE_F16][GGML_TYPE_F16],
                                 wgsl_OptimizedGEMVF16xF16, "mul_mat_gemv_f16_f16_optimized");
@@ -1655,7 +1649,7 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
                                 wgsl_OptimizedGEMVF16xF32, "mul_mat_gemv_f16_f32_optimized");
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_gemv_pipeline[GGML_TYPE_F32][GGML_TYPE_F32],
                                 wgsl_OptimizedGEMVF32xF32, "mul_mat_gemv_f32_f32_optimized");
-    
+
     // Template pipelines - for fallback cases and small matrices
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_template_pipeline[GGML_TYPE_F16][GGML_TYPE_F16],
                                 wgsl_mul_mat_f16_f16, "mul_mat_template_f16_f16");
