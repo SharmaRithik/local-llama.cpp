@@ -34,7 +34,7 @@ struct MulMatParams {
 
 @group(0) @binding(0) var<storage, read_write> src0: array<vec4<f16>>; // N rows, K columns
 @group(0) @binding(1) var<storage, read_write> src1: array<vec4<f32>>; // M rows, K columns (transposed)
-@group(0) @binding(2) var<storage, read_write> dst: array<f32>; // M rows, N columns
+@group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>; // M rows, N columns
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
@@ -173,11 +173,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
         for (var ty = 0u; ty < TILE_Y; ty++) {
             let global_row = output_row_base + ty;
             //if (global_row < params.m) {
-                for (var tx = 0u; tx < TILE_X; tx++) {
+                for (var tx = 0u; tx < TILE_X; tx += 4) {
                     let global_col = output_col_base + tx;
                     //if (global_col < params.n) {
                         let dst_idx = dst_batch_offset + global_row * params.n + global_col;
-                        dst[dst_idx] = acc[ty][tx];
+                        dst[dst_idx/4] = vec4<f32>(acc[ty][tx], acc[ty][tx + 1], acc[ty][tx + 2], acc[ty][tx + 3]);
                     //}
                 }
             //}
