@@ -248,6 +248,7 @@ struct webgpu_context_struct {
 
     webgpu_pipeline memset_pipeline;
     webgpu_pipeline mul_mat_pipeline[30][2];
+    webgpu_pipeline mul_mat_fast_pipeline;
     webgpu_pipeline set_rows_pipeline;
     webgpu_pipeline get_rows_pipeline[30];
     webgpu_pipeline get_rows_f32_no_vec_pipeline;
@@ -855,9 +856,20 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
          .size    = ggml_webgpu_tensor_binding_size(ctx, dst)  },
     };
 
+    const uint32_t M       = dst->ne[1];  // number of rows in result
+    const uint32_t N       = dst->ne[0];  // number of columns in result
+
+    webgpu_pipeline pipeline = ctx->mul_mat_pipeline[src0->type][src1->type];
     uint32_t wg_x =
         (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
-    return ggml_backend_webgpu_build(ctx, ctx->mul_mat_pipeline[src0->type][src1->type], params, entries, wg_x);
+    if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32 && src0->ne[0] % 4 == 0) {
+        pipeline = ctx->mul_mat_fast_pipeline;
+        uint32_t tiles_x        = (M + 64 - 1) / 64;  // rows
+        uint32_t tiles_y        = (N + 32 - 1) / 32;  // columns
+        wg_x = tiles_x * tiles_y * dst->ne[2] * dst->ne[3];
+    }
+
+    return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
 }
 
 static webgpu_command ggml_webgpu_binary_op(webgpu_context &  ctx,
@@ -1617,6 +1629,8 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
                                 wgsl_mul_mat_iq4_nl_f32, "mul_mat_iq4_nl_f32");
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_pipeline[GGML_TYPE_IQ4_XS][GGML_TYPE_F32],
                                 wgsl_mul_mat_iq4_xs_f32, "mul_mat_iq4_xs_f32");
+
+    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_fast_pipeline, wgsl_mul_mat_fast, "mul_mat_fast");
 }
 
 static void ggml_webgpu_init_set_rows_pipeline(webgpu_context & webgpu_ctx) {
