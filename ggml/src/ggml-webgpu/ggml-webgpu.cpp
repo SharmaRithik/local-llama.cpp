@@ -515,7 +515,9 @@ static webgpu_command ggml_backend_webgpu_build(webgpu_context &                
                                                 std::vector<uint32_t>             params,
                                                 std::vector<wgpu::BindGroupEntry> bind_group_entries,
                                                 uint32_t                          wg_x,
-                                                std::optional<webgpu_pool_bufs>   set_rows_error_bufs = std::nullopt) {
+                                                std::optional<webgpu_pool_bufs>   set_rows_error_bufs = std::nullopt,
+                                                uint32_t                          wg_y = 1,
+                                                uint32_t                          wg_z = 1) {
     webgpu_pool_bufs params_bufs = ctx->param_buf_pool.alloc_bufs();
 
     ggml_backend_webgpu_map_buffer(ctx, params_bufs.host_buf, wgpu::MapMode::Write, 0, params_bufs.host_buf.GetSize());
@@ -560,7 +562,7 @@ static webgpu_command ggml_backend_webgpu_build(webgpu_context &                
 #endif
     pass.SetPipeline(pipeline.pipeline);
     pass.SetBindGroup(0, bind_group);
-    pass.DispatchWorkgroups(wg_x, 1, 1);
+    pass.DispatchWorkgroups(wg_x, wg_y, wg_z);
     pass.End();
 
 #ifdef GGML_WEBGPU_GPU_PROFILE
@@ -863,6 +865,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
     // GEMM: M > 1 and N > 1 (matrix-matrix multiplication)
     const uint32_t M = dst->ne[1];  // number of rows in result
     const uint32_t N = dst->ne[0];  // number of columns in result
+    const uint32_t K = src0->ne[0]; // reduction dimension
     const bool is_gemv = (M == 1 || N == 1);
 
     // Calculate workgroup count for element-based dispatch (used by template shader)
@@ -894,20 +897,34 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
         }
     }
 
-    // Case 4: GEMV F16xF32 - Use optimized shader for medium/large vectors, template for small
+    // Case 4: GEMV F16xF32 - Use optimized gemv_fast shader for medium/large vectors, template for small
     if (is_gemv && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {
-        // OptimizedGEMVF16xF32: 64x2 workgroup, 1x1 work per thread = 64x2 tiles (128 threads, wpt=1)
-        // Check the larger dimension (whichever is not 1) to determine if optimization helps
-        uint32_t larger_dim = (M > N) ? M : N;
-        if (larger_dim >= 64) {  // Lowered threshold for new tile size
-            const uint32_t TILE_SIZE_X = 64;  // 64 * 1
-            const uint32_t TILE_SIZE_Y = 2;   // 2 * 1
-            uint32_t tiles_x = (N + TILE_SIZE_X - 1) / TILE_SIZE_X;
-            uint32_t tiles_y = (M + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
-            uint32_t wg_x_optimized = tiles_x * tiles_y * dst->ne[2] * dst->ne[3];
-            return ggml_backend_webgpu_build(ctx, ctx->mul_mat_gemv_pipeline[src0->type][src1->type], params, entries, wg_x_optimized);
+        // gemv_fast: 256 threads per workgroup, computes 16 outputs per workgroup (written as 4x vec4)
+        // Uses cooperative reduction and vec4 operations (requires K % 4 == 0 and outputs % 16 == 0)
+        uint32_t output_elements = (M == 1) ? N : M;
+        uint32_t batches = dst->ne[2] * dst->ne[3];
+        
+        // Use gemv_fast for larger vectors where reduction overhead pays off
+        // Requires K divisible by 4 for vec4 alignment, outputs divisible by 16 for optimal vec4 output
+        if (output_elements >= 64 && K % 4 == 0 && output_elements % 16 == 0) {
+            // Each workgroup computes 16 consecutive outputs (4x vec4 writes)
+            uint32_t output_vec4_groups = output_elements / 16;
+            uint32_t total_workgroups = output_vec4_groups * batches;
+            
+            // WebGPU limit: max 65535 workgroups per dimension
+            // Use 2D dispatch if needed: wg_linear = wg_y * 65535 + wg_x
+            uint32_t wg_x_gemv, wg_y_gemv;
+            if (total_workgroups <= 65535) {
+                wg_x_gemv = total_workgroups;
+                wg_y_gemv = 1;
+            } else {
+                wg_x_gemv = 65535;
+                wg_y_gemv = (total_workgroups + 65534) / 65535;
+            }
+            return ggml_backend_webgpu_build(ctx, ctx->mul_mat_gemv_pipeline[src0->type][src1->type], params, entries, 
+                                           wg_x_gemv, std::nullopt, wg_y_gemv, 1);
         } else {
-            // Small vectors: use template shader for correctness
+            // Small vectors, unaligned K, or outputs not divisible by 16: use template shader
             return ggml_backend_webgpu_build(ctx, ctx->mul_mat_template_pipeline[src0->type][src1->type], params, entries, wg_x);
         }
     }
@@ -1646,7 +1663,7 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_gemv_pipeline[GGML_TYPE_F16][GGML_TYPE_F16],
                                 wgsl_OptimizedGEMVF16xF16, "mul_mat_gemv_f16_f16_optimized");
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_gemv_pipeline[GGML_TYPE_F16][GGML_TYPE_F32],
-                                wgsl_OptimizedGEMVF16xF32, "mul_mat_gemv_f16_f32_optimized");
+                                wgsl_gemv_fast, "gemv_fast_f16_f32");
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_gemv_pipeline[GGML_TYPE_F32][GGML_TYPE_F32],
                                 wgsl_OptimizedGEMVF32xF32, "mul_mat_gemv_f32_f32_optimized");
 
