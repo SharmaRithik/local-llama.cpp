@@ -1,13 +1,5 @@
 enable f16;
 
-const WORKGROUP_SIZE_X: u32 = 16u;
-const WORKGROUP_SIZE_Y: u32 = 8u;
-const TOTAL_WORKGROUP_SIZE: u32 = WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y;
-const TILE_X: u32 = 4u;
-const TILE_Y: u32 = 4u;
-const TILE_K: u32 = 32u;
-const VECTOR_SIZE: u32 = 4u;
-
 struct MulMatParams {
     offset_src0: u32,
     offset_src1: u32,
@@ -33,8 +25,8 @@ struct MulMatParams {
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
-var<workgroup> A_shared: array<vec4<f16>, (WORKGROUP_SIZE_Y * TILE_Y * TILE_K)/VECTOR_SIZE>;
-var<workgroup> B_shared: array<vec4<f32>, (WORKGROUP_SIZE_X * TILE_X * TILE_K)/VECTOR_SIZE>;
+var<workgroup> src0_shmem: array<vec4<f16>, (WORKGROUP_SIZE_Y * TILE_Y * TILE_K)/VEC_SIZE>;
+var<workgroup> src1_shmem: array<vec4<f32>, (WORKGROUP_SIZE_X * TILE_X * TILE_K)/VEC_SIZE>;
 
 fn get_local_x(thread_id: u32) -> u32 {
     return thread_id / WORKGROUP_SIZE_Y;
@@ -43,19 +35,39 @@ fn get_local_y(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_Y;
 }
 
+fn zero_vec4_f32() -> vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+}
+
+fn zero_vec4_f16() -> vec4<f16> {
+    return vec4<f16>(0.0, 0.0, 0.0, 0.0);
+}
+
 fn compute_vec4(a: vec4<f16>, b: vec4<f32>) -> f32 {
     let a_f32 = vec4<f32>(f32(a.x), f32(a.y), f32(a.z), f32(a.w));
     return dot(a_f32, b);
 }
 
-//override const WORKGROUP_SIZE_X: u32;
-//override const WORKGROUP_SIZE_Y: u32;
-//override const TILE_X: u32;
-//override const TILE_Y: u32;
-//override const TILE_K: u32;
-//override const VECTOR_SIZE: u32;
+fn store_val(acc: array<array<f32, TILE_Y>, TILE_X>, tx: u32, ty: u32) -> vec4<f32> {
+    return vec4<f32>(acc[tx][ty], acc[tx][ty + 1], acc[tx][ty + 2], acc[tx][ty + 3]);
+}
 
-//const TOTAL_WORKGROUP_SIZE = WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y;
+// Warning: cannot be overrides, must match values in ggml-webgpu.cpp
+const TILE_X = 4u;
+// must be multiple of 4 for vec4 loads
+const TILE_Y = 4u;
+
+override WORKGROUP_SIZE_X: u32;
+override WORKGROUP_SIZE_Y: u32;
+override TILE_K: u32;
+override VEC_SIZE: u32;
+
+override TOTAL_WORKGROUP_SIZE = WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y;
+override TILE_SRC0_SHMEM = TILE_K * WORKGROUP_SIZE_Y * TILE_Y;
+override TILE_SRC1_SHMEM = WORKGROUP_SIZE_X * TILE_X * TILE_K;
+// assumes WG_SIZE divides SHMEM TILES
+override TILE_SRC0_LD_PER_THREAD = (TILE_SRC0_SHMEM + TOTAL_WORKGROUP_SIZE * VEC_SIZE - 1) / (TOTAL_WORKGROUP_SIZE * VEC_SIZE);
+override TILE_SRC1_LD_PER_THREAD = (TILE_SRC1_SHMEM + TOTAL_WORKGROUP_SIZE * VEC_SIZE - 1) / (TOTAL_WORKGROUP_SIZE * VEC_SIZE);
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
@@ -90,92 +102,76 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let src02_idx = dst2_idx / params.broadcast2;
     let src12_idx = dst2_idx;
 
-    var acc: array<array<f32, TILE_Y>, TILE_X>;
-
     let src0_batch_offset = params.offset_src0 + src03_idx * params.stride_03 + src02_idx * params.stride_02;
     let src1_batch_offset = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
 
+    var acc: array<array<f32, TILE_Y>, TILE_X>;
+
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
-        let a_tile_size = TILE_K * WORKGROUP_SIZE_Y * TILE_Y;
-        let a_loads_per_thread = ((a_tile_size + TOTAL_WORKGROUP_SIZE - 1u) / TOTAL_WORKGROUP_SIZE) / 4;
-
-        for (var load_idx = 0u; load_idx < a_loads_per_thread; load_idx++) {
-            let elem_idx = ((thread_id / 4) * 4) + (thread_id % 4) * TOTAL_WORKGROUP_SIZE + load_idx * 4 * TOTAL_WORKGROUP_SIZE;
-//            if (elem_idx < a_tile_size) {
-                let tile_col = elem_idx / TILE_K;
-                let tile_k = elem_idx % TILE_K;
-                let global_col = wg_y * WORKGROUP_SIZE_Y * TILE_Y + tile_col;
-                let global_k = k_outer + tile_k;
-
-//                if (global_col < params.n && global_k < params.k) {
-                    let src0_idx = src0_batch_offset + global_col * params.stride_01 + global_k;
-                    A_shared[elem_idx/4] = src0[src0_idx/4];
-//                }
-//            }
+        for (var load_idx = 0u; load_idx < TILE_SRC0_LD_PER_THREAD; load_idx++) {
+            let elem_idx = (thread_id + load_idx * TOTAL_WORKGROUP_SIZE) * VEC_SIZE;
+            let tile_col = elem_idx / TILE_K;
+            let tile_k = elem_idx % TILE_K;
+            let global_col = wg_y * WORKGROUP_SIZE_Y * TILE_Y + tile_col;
+            let global_k = k_outer + tile_k;
+            let src0_idx = src0_batch_offset + global_col * params.stride_01 + global_k;
+            src0_shmem[elem_idx/VEC_SIZE] = select( // taking a slight performance hit to avoid oob
+              zero_vec4_f16(),
+              src0[src0_idx/VEC_SIZE],
+              global_col < params.n && global_k < params.k);
         }
 
-        let b_tile_size = WORKGROUP_SIZE_X * TILE_X * TILE_K;
-        let b_loads_per_thread = ((b_tile_size + TOTAL_WORKGROUP_SIZE - 1u) / TOTAL_WORKGROUP_SIZE) / 4;
+        for (var load_idx = 0u; load_idx < TILE_SRC1_LD_PER_THREAD; load_idx++) {
+            let elem_idx = (thread_id + load_idx * TOTAL_WORKGROUP_SIZE) * VEC_SIZE;
+            let tile_row = elem_idx / TILE_K;
+            let tile_k = elem_idx % TILE_K;
+            let global_row = wg_x * WORKGROUP_SIZE_X * TILE_X + tile_row;
+            let global_k = k_outer + tile_k;
 
-        for (var load_idx = 0u; load_idx < b_loads_per_thread; load_idx++) {
-            let elem_idx = ((thread_id / 4) * 4) + (thread_id % 4) * TOTAL_WORKGROUP_SIZE + load_idx * 4 * TOTAL_WORKGROUP_SIZE;
-//            if (elem_idx < b_tile_size) {
-                let tile_row = elem_idx / TILE_K;
-                let tile_k = elem_idx % TILE_K;
-                let global_row = wg_x * WORKGROUP_SIZE_X * TILE_X + tile_row;
-                let global_k = k_outer + tile_k;
-
-//                if (global_row < params.m && global_k < params.k) {
-                    let src1_idx = src1_batch_offset + global_row * params.stride_11 + global_k;
-                    B_shared[elem_idx/4] = src1[src1_idx/4];
-//                }
-//            }
+            let src1_idx = src1_batch_offset + global_row * params.stride_11 + global_k;
+            src1_shmem[elem_idx/VEC_SIZE] = select(
+              zero_vec4_f32(),
+              src1[src1_idx/VEC_SIZE],
+              global_row < params.m && global_k < params.k);
         }
 
         workgroupBarrier();
 
         let k_end = min(TILE_K, params.k - k_outer);
 
-                for (var k_inner = 0u; k_inner < k_end / 4u; k_inner++) {
-                    var a_r_tile: array<vec4<f16>, TILE_Y>;
-                    for (var ty = 0u; ty < TILE_Y; ty++) {
-                      let a_col = local_y * TILE_Y + ty;
-//                      if (output_col_base + ty < params.n) {
-                        let a_idx = k_inner * 4 + a_col * TILE_K;
-                        a_r_tile[ty] = A_shared[a_idx/4];
-//                      }
-                    }
-                    for (var tx = 0u; tx < TILE_X; tx++) {
-                        let b_row = local_x * TILE_X + tx;
-//                        if (output_row_base + tx < params.m) {
-                            let b_idx = b_row * TILE_K + k_inner * 4u;
-                            let b_vec = B_shared[b_idx/4];
-
-                            for (var ty = 0u; ty < TILE_Y; ty++) {
-//                                if (output_col_base + ty < params.n) {
-                                    acc[tx][ty] += compute_vec4(a_r_tile[ty], b_vec);
-//                                }
-                            }
-//                        }
-                    }
+        for (var k_inner = 0u; k_inner < k_end; k_inner += VEC_SIZE) {
+            var src0_tile: array<vec4<f16>, TILE_Y>;
+            for (var ty = 0u; ty < TILE_Y; ty++) {
+                let src0_col = local_y * TILE_Y + ty;
+                let src0_idx = k_inner + src0_col * TILE_K;
+                src0_tile[ty] = src0_shmem[src0_idx/VEC_SIZE];
+            }
+            for (var tx = 0u; tx < TILE_X; tx++) {
+                let src1_row = local_x * TILE_X + tx;
+                let src1_idx = src1_row * TILE_K + k_inner;
+                let src1_vec = src1_shmem[src1_idx/VEC_SIZE];
+                for (var ty = 0u; ty < TILE_Y; ty++) {
+                      acc[tx][ty] += compute_vec4(src0_tile[ty], src1_vec);
                 }
+            }
+        }
 
         workgroupBarrier();
     }
 
-        let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;
+    let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;
 
-        for (var tx = 0u; tx < TILE_X; tx++) {
-            let global_row = output_row_base + tx;
-            if (global_row < params.m) {
-                for (var ty = 0u; ty < TILE_Y; ty += 4) {
-                    let global_col = output_col_base + ty;
-                    if (global_col < params.n) {
-                        let dst_idx = dst_batch_offset + global_row * params.n + global_col;
-                        dst[dst_idx/4] = vec4<f32>(acc[tx][ty], acc[tx][ty + 1], acc[tx][ty + 2], acc[tx][ty + 3]);
-                    }
+    for (var tx = 0u; tx < TILE_X; tx++) {
+        let global_row = output_row_base + tx;
+        if (global_row < params.m) {
+            for (var ty = 0u; ty < TILE_Y; ty += VEC_SIZE) {
+                let global_col = output_col_base + ty;
+                if (global_col < params.n) {
+                    let dst_idx = dst_batch_offset + global_row * params.n + global_col;
+                    dst[dst_idx/VEC_SIZE] = store_val(acc, tx, ty);
                 }
             }
         }
+    }
 }

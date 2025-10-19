@@ -73,6 +73,17 @@
 // For operations which process a row in parallel, this seems like a reasonable default
 #define WEBGPU_ROW_SPLIT_WG_SIZE 64
 
+// Matrix multiplication fast path parameters
+
+// Warning: must match values in mul_mat_fast.wgsl
+#define WEBGPU_MUL_MAT_TILE_X 4
+#define WEBGPU_MUL_MAT_TILE_Y 4
+
+#define WEBGPU_MUL_MAT_WG_SIZE_X 16
+#define WEBGPU_MUL_MAT_WG_SIZE_Y 8
+#define WEBGPU_MUL_MAT_TILE_K    32
+#define WEBGPU_MUL_MAT_VEC_SIZE  4
+
 /* End Constants */
 
 // This is a "fake" base pointer, since WebGPU buffers do not have pointers to their locations.
@@ -856,17 +867,19 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
          .size    = ggml_webgpu_tensor_binding_size(ctx, dst)  },
     };
 
-    const uint32_t M       = dst->ne[1];  // number of rows in result
-    const uint32_t N       = dst->ne[0];  // number of columns in result
-
     webgpu_pipeline pipeline = ctx->mul_mat_pipeline[src0->type][src1->type];
+
     uint32_t wg_x =
         (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
-    if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32 && src0->ne[0] % 4 == 0) {
-        pipeline = ctx->mul_mat_fast_pipeline;
-        uint32_t tiles_x        = (M + 64 - 1) / 64;  // rows
-        uint32_t tiles_y        = (N + 32 - 1) / 32;  // columns
-        wg_x = tiles_x * tiles_y * dst->ne[2] * dst->ne[3];
+
+    if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32 && src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 &&
+        dst->ne[1] % 4 == 0) {
+        pipeline          = ctx->mul_mat_fast_pipeline;
+        uint32_t tile_x_s = WEBGPU_MUL_MAT_TILE_X * WEBGPU_MUL_MAT_WG_SIZE_X;
+        uint32_t tiles_x  = (dst->ne[1] + tile_x_s - 1) / tile_x_s;
+        uint32_t tile_y_s = WEBGPU_MUL_MAT_TILE_Y * WEBGPU_MUL_MAT_WG_SIZE_Y;
+        uint32_t tiles_y  = (dst->ne[0] + tile_y_s - 1) / tile_y_s;
+        wg_x              = tiles_x * tiles_y * dst->ne[2] * dst->ne[3];
     }
 
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
@@ -1630,7 +1643,19 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
     ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_pipeline[GGML_TYPE_IQ4_XS][GGML_TYPE_F32],
                                 wgsl_mul_mat_iq4_xs_f32, "mul_mat_iq4_xs_f32");
 
-    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_fast_pipeline, wgsl_mul_mat_fast, "mul_mat_fast");
+    // override constants
+    std::vector<wgpu::ConstantEntry> mul_mat_fast_constants(4);
+    mul_mat_fast_constants[0].key   = "WORKGROUP_SIZE_X";
+    mul_mat_fast_constants[0].value = WEBGPU_MUL_MAT_WG_SIZE_X;
+    mul_mat_fast_constants[1].key   = "WORKGROUP_SIZE_Y";
+    mul_mat_fast_constants[1].value = WEBGPU_MUL_MAT_WG_SIZE_Y;
+    mul_mat_fast_constants[2].key   = "TILE_K";
+    mul_mat_fast_constants[2].value = WEBGPU_MUL_MAT_TILE_K;
+    mul_mat_fast_constants[3].key   = "VEC_SIZE";
+    mul_mat_fast_constants[3].value = WEBGPU_MUL_MAT_VEC_SIZE;
+
+    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->mul_mat_fast_pipeline, wgsl_mul_mat_fast,
+                                "mul_mat_fast", mul_mat_fast_constants);
 }
 
 static void ggml_webgpu_init_set_rows_pipeline(webgpu_context & webgpu_ctx) {
