@@ -77,11 +77,11 @@
 // Matrix multiplication fast path parameters
 
 // Warning: must match values in mul_mat_fast.wgsl
-#define WEBGPU_MUL_MAT_TILE_X 4
-#define WEBGPU_MUL_MAT_TILE_Y 4
+#define WEBGPU_MUL_MAT_TILE_M 4
+#define WEBGPU_MUL_MAT_TILE_N 2
 
-#define WEBGPU_MUL_MAT_WG_SIZE_X 16
-#define WEBGPU_MUL_MAT_WG_SIZE_Y 8
+#define WEBGPU_MUL_MAT_WG_SIZE_M 16
+#define WEBGPU_MUL_MAT_WG_SIZE_N 8
 #define WEBGPU_MUL_MAT_TILE_K    32
 
 /* End Constants */
@@ -863,8 +863,8 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),
-        (uint32_t) dst->ne[1],                                  // number of rows in result (M)
-        (uint32_t) dst->ne[0],                                  // number of columns in result (N)
+        (uint32_t) dst->ne[0],                                  // number of rows in result (M, transposed)
+        (uint32_t) dst->ne[1],                                  // number of columns in result (N)
         (uint32_t) src0->ne[0],                                 // number of columns in src0/src1 (K)
         (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),  // stride (elements/blocks) of src0 in dimension 1
         (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),  // stride (elements/blocks) of src1 in dimension 1
@@ -920,11 +920,11 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
     if (use_fast) {
         int vectorized    = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
         pipeline          = ctx->mul_mat_pipelines[src0->type][src1->type][vectorized];
-        uint32_t tile_x_s = WEBGPU_MUL_MAT_TILE_X * WEBGPU_MUL_MAT_WG_SIZE_X;
-        uint32_t tiles_x  = (dst->ne[1] + tile_x_s - 1) / tile_x_s;
-        uint32_t tile_y_s = WEBGPU_MUL_MAT_TILE_Y * WEBGPU_MUL_MAT_WG_SIZE_Y;
-        uint32_t tiles_y  = (dst->ne[0] + tile_y_s - 1) / tile_y_s;
-        wg_x              = tiles_x * tiles_y * dst->ne[2] * dst->ne[3];
+        uint32_t tile_n_s = WEBGPU_MUL_MAT_TILE_N * WEBGPU_MUL_MAT_WG_SIZE_N;
+        uint32_t tiles_n  = (dst->ne[1] + tile_n_s - 1) / tile_n_s;
+        uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * WEBGPU_MUL_MAT_WG_SIZE_M;
+        uint32_t tiles_m  = (dst->ne[0] + tile_m_s - 1) / tile_m_s;
+        wg_x              = tiles_m * tiles_n * dst->ne[2] * dst->ne[3];
     }
 
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
@@ -1690,10 +1690,10 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
 
     // override constants
     std::vector<wgpu::ConstantEntry> mul_mat_fast_constants(3);
-    mul_mat_fast_constants[0].key   = "WORKGROUP_SIZE_X";
-    mul_mat_fast_constants[0].value = WEBGPU_MUL_MAT_WG_SIZE_X;
-    mul_mat_fast_constants[1].key   = "WORKGROUP_SIZE_Y";
-    mul_mat_fast_constants[1].value = WEBGPU_MUL_MAT_WG_SIZE_Y;
+    mul_mat_fast_constants[0].key   = "WORKGROUP_SIZE_M";
+    mul_mat_fast_constants[0].value = WEBGPU_MUL_MAT_WG_SIZE_M;
+    mul_mat_fast_constants[1].key   = "WORKGROUP_SIZE_N";
+    mul_mat_fast_constants[1].value = WEBGPU_MUL_MAT_WG_SIZE_N;
     mul_mat_fast_constants[2].key   = "TILE_K";
     mul_mat_fast_constants[2].value = WEBGPU_MUL_MAT_TILE_K;
 
