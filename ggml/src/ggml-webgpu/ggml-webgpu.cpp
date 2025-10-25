@@ -84,8 +84,8 @@
 #define WEBGPU_MUL_MAT_WG_SIZE_N 8
 #define WEBGPU_MUL_MAT_TILE_K    32
 
-#define WEBGPU_MUL_MAT_SUBGROUP_M 1
-#define WEBGPU_MUL_MAT_SUBGROUP_N 1
+#define WEBGPU_MUL_MAT_SUBGROUP_M 2
+#define WEBGPU_MUL_MAT_SUBGROUP_N 2
 
 /* End Constants */
 
@@ -925,13 +925,24 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
     }
 
     if (use_fast) {
-        int vectorized    = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
-        pipeline          = ctx->mul_mat_pipelines[src0->type][src1->type][vectorized];
-        uint32_t tile_n_s = WEBGPU_MUL_MAT_TILE_N * WEBGPU_MUL_MAT_WG_SIZE_N;
-        uint32_t tiles_n  = (dst->ne[1] + tile_n_s - 1) / tile_n_s;
-        uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * WEBGPU_MUL_MAT_WG_SIZE_M;
-        uint32_t tiles_m  = (dst->ne[0] + tile_m_s - 1) / tile_m_s;
-        wg_x              = tiles_m * tiles_n * dst->ne[2] * dst->ne[3];
+        int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
+        pipeline       = ctx->mul_mat_pipelines[src0->type][src1->type][vectorized];
+
+        uint32_t wg_m;
+        uint32_t wg_n;
+        if (ctx->supports_subgroup_matrix) {
+            // The total number of subgroups/workgroups needed per matrix.
+            uint32_t subgroups_m = (dst->ne[0] + ctx->subgroup_matrix_config.M - 1) / ctx->subgroup_matrix_config.M;
+            wg_m                 = subgroups_m / WEBGPU_MUL_MAT_SUBGROUP_M;
+            uint32_t subgroups_n = (dst->ne[1] + ctx->subgroup_matrix_config.N - 1) / ctx->subgroup_matrix_config.N;
+            wg_n                 = subgroups_n / WEBGPU_MUL_MAT_SUBGROUP_N;
+        } else {
+            uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * WEBGPU_MUL_MAT_WG_SIZE_M;
+            uint32_t tile_n_s = WEBGPU_MUL_MAT_TILE_N * WEBGPU_MUL_MAT_WG_SIZE_N;
+            wg_m              = (dst->ne[0] + tile_m_s - 1) / tile_m_s;
+            wg_n              = (dst->ne[1] + tile_n_s - 1) / tile_n_s;
+        }
+        wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
     }
 
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
@@ -1696,13 +1707,9 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
                                 wgsl_mul_mat_iq4_xs_f32, "mul_mat_iq4_xs_f32");
 
     // override constants
-    std::vector<wgpu::ConstantEntry> mul_mat_opt_constants(3);
-    mul_mat_opt_constants[0].key   = "WORKGROUP_SIZE_M";
-    mul_mat_opt_constants[0].value = WEBGPU_MUL_MAT_WG_SIZE_M;
-    mul_mat_opt_constants[1].key   = "WORKGROUP_SIZE_N";
-    mul_mat_opt_constants[1].value = WEBGPU_MUL_MAT_WG_SIZE_N;
-    mul_mat_opt_constants[2].key   = "TILE_K";
-    mul_mat_opt_constants[2].value = WEBGPU_MUL_MAT_TILE_K;
+    std::vector<wgpu::ConstantEntry> mul_mat_opt_constants(1);
+    mul_mat_opt_constants[0].key   = "TILE_K";
+    mul_mat_opt_constants[0].value = WEBGPU_MUL_MAT_TILE_K;
 
     if (webgpu_ctx->supports_subgroup_matrix) {
         mul_mat_opt_constants.push_back({ .key = "SUBGROUP_M", .value = WEBGPU_MUL_MAT_SUBGROUP_M });
@@ -1713,6 +1720,8 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
             { .key = "SUBGROUP_MATRIX_N", .value = static_cast<double>(webgpu_ctx->subgroup_matrix_config.N) });
         mul_mat_opt_constants.push_back(
             { .key = "SUBGROUP_SIZE", .value = static_cast<double>(webgpu_ctx->subgroup_size) });
+        mul_mat_opt_constants.push_back(
+            { .key = "SUBGROUP_MATRIX_K", .value = static_cast<double>(webgpu_ctx->subgroup_matrix_config.K) });
 
         webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F32][GGML_TYPE_F32][0] =
             ggml_webgpu_create_pipeline2(webgpu_ctx->device, wgsl_mul_mat_subgroup_matrix_f32_f32,
@@ -1733,6 +1742,9 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
             ggml_webgpu_create_pipeline2(webgpu_ctx->device, wgsl_mul_mat_subgroup_matrix_f16_f16_vec,
                                          "mul_mat_subgroup_matrix_f16_f16_vec", mul_mat_opt_constants);
     } else {
+        mul_mat_opt_constants.push_back({ .key = "WORKGROUP_SIZE_M", .value = WEBGPU_MUL_MAT_WG_SIZE_M });
+        mul_mat_opt_constants.push_back({ .key = "WORKGROUP_SIZE_N", .value = WEBGPU_MUL_MAT_WG_SIZE_N });
+
         webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F32][GGML_TYPE_F32][0] = ggml_webgpu_create_pipeline2(
             webgpu_ctx->device, wgsl_mul_mat_reg_tile_f32_f32, "mul_mat_reg_tile_f32_f32", mul_mat_opt_constants);
         webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F32][GGML_TYPE_F32][1] =
@@ -2268,12 +2280,13 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     ctx->adapter.GetFeatures(&features);
     // we require f16 support
     GGML_ASSERT(ctx->adapter.HasFeature(wgpu::FeatureName::ShaderF16));
-    // Only support devices/configurations where subgroup implementations make sense
-    // (i.e. it won't change on you at runtime)
-    if (info.subgroupMinSize == info.subgroupMaxSize) {
-        ctx->subgroup_size            = info.subgroupMaxSize;
-        ctx->supports_subgroup_matrix = ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
-    }
+
+    // For subgroup matrix code to be workable, we really need a consistent subgroup size.
+    // Unfortunately, WebGPU allows info.subgroup{Min/Max}Size to be different, and even on devices
+    // where it is consistent, e.g., Apple M-series GPUs, the min/max sizes report different values.
+    // Therefore, hardcoding the subgroup size to 32 for now for development.
+    ctx->subgroup_size            = 32;
+    ctx->supports_subgroup_matrix = ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
 
     // Initialize device
     std::vector<wgpu::FeatureName> required_features = { wgpu::FeatureName::ShaderF16,
