@@ -150,6 +150,7 @@ fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: f16) -> f32 {
 
 #define(SHADER)
 enable f16;
+enable chromium_experimental_subgroup_matrix;
 
 struct MulMatParams {
     offset_src0: u32,
@@ -172,7 +173,7 @@ struct MulMatParams {
 
 @group(0) @binding(0) var<storage, read_write> src0: array<{{SRC0_TYPE}}>; // M rows, K columns
 @group(0) @binding(1) var<storage, read_write> src1: array<{{SRC1_TYPE}}>; // K rows, N columns (transposed)
-@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>; // M rows, N columns
+@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>; // M rows, N columns (transposed)
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
@@ -185,11 +186,21 @@ fn get_local_m(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_M;
 }
 
+// Number of threads per workgroup: SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE
+// Shared memory src0: SUBGROUP_M * SUBGROUP_MATRIX_M * TILE_K
+// Shared memory src1: SUBGROUP_N * SUBGROUP_MATRIX_N * TILE_K
+// TILE_K must be divisible by SUBGROUP_MATRIX_K
+
+override SUBGROUP_M: u32;
+override SUBGROUP_MATRIX_M: u32;
+override SUBGROUP_N: u32;
+override SUBGROUP_MATRIX_N: u32;
+override SUBGROUP_SIZE: u32;
 
 // Warning: cannot be overrides, must match values in ggml-webgpu.cpp
-const TILE_N = 2u;
-// must be multiple of 4 for vec4 loads
+// TILE_M must be multiple of 4 for vec4 loads
 const TILE_M = 4u;
+const TILE_N = 4u;
 
 override WORKGROUP_SIZE_M: u32;
 override WORKGROUP_SIZE_N: u32;
@@ -204,7 +215,8 @@ var<workgroup> src1_shmem: array<{{SRC1_TYPE}}, TILE_SRC1_SHMEM/{{VEC_SIZE}}>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
-        @builtin(local_invocation_id) local_id: vec3<u32>) {
+        @builtin(local_invocation_id) local_id: vec3<u32>,
+        @builtin(subgroup_id) subgroup_id: u32) {
 
     let thread_id = local_id.x;
     let local_m = get_local_m(thread_id);
@@ -239,6 +251,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let src1_batch_offset = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
 
     var acc: array<array<f32, TILE_N>, TILE_M>;
+    var src0_sg_mat : subgroup_matrix_left<f16, 8, 8>;
+    var src1_sg_mat : subgroup_matrix_right<f16, 8, 8>;
+    var acc_sg_mat : subgroup_matrix_result<f16, 8, 8>;
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
