@@ -5,7 +5,7 @@
     "REPLS": {
       "SRC0_TYPE" : "vec4<f32>",
       "SRC1_TYPE" : "vec4<f32>",
-      "DST_TYPE" : "f32",
+      "DST_TYPE" : "vec4<f32>",
       "VEC_SIZE" : "4",
     },
     "DECLS": ["SHMEM_VEC"]
@@ -25,7 +25,7 @@
     "REPLS": {
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f32>",
-      "DST_TYPE" : "f32",
+      "DST_TYPE" : "vec4<f32>",
       "VEC_SIZE" : "4",
     },
     "DECLS": ["SHMEM_VEC"]
@@ -45,7 +45,7 @@
     "REPLS": {
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f16>",
-      "DST_TYPE" : "f32",
+      "DST_TYPE" : "vec4<f32>",
       "VEC_SIZE" : "4",
     },
     "DECLS": ["SHMEM_VEC"]
@@ -88,6 +88,15 @@ fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
     src1_shmem[idx + 2] = f16(val.z);
     src1_shmem[idx + 3] = f16(val.w);
 }
+
+fn store_dst(shmem_idx: u32, dst_idx: u32) {
+    dst[dst_idx] = vec4<f32>(
+        f32(src0_shmem[shmem_idx]),
+        f32(src0_shmem[shmem_idx + 1]),
+        f32(src0_shmem[shmem_idx + 2]),
+        f32(src0_shmem[shmem_idx + 3])
+    );
+}
 #enddecl(SHMEM_VEC)
 
 #decl(SHMEM_SCALAR)
@@ -105,6 +114,10 @@ fn zero_val_src1() -> {{SRC1_TYPE}} {
 
 fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
     src1_shmem[idx] = f16(val);
+}
+
+fn store_dst(shmem_idx: u32, dst_idx: u32) {
+    dst[dst_idx] = f32(src0_shmem[shmem_idx]);
 }
 #enddecl(SHMEM_SCALAR)
 
@@ -298,7 +311,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let tile_dst_row_base = wg_n * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
     let tile_dst_col_base = wg_m * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 
-    for (var idx = thread_id; idx < total_tile_elems; idx += TOTAL_WORKGROUP_SIZE) {
+    for (var idx = thread_id * {{VEC_SIZE}}; idx < total_tile_elems; idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
         let local_row = idx / WG_TILE_STRIDE;
         let local_col = idx % WG_TILE_STRIDE;
 
@@ -307,7 +320,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
         if (global_row < params.n && global_col < params.m) {
             let dst_idx = dst_batch_offset + global_row * params.m + global_col;
-            dst[dst_idx] = f32(src0_shmem[idx]);
+            store_dst(idx, dst_idx/{{VEC_SIZE}});
         }
     }
 }
