@@ -275,6 +275,8 @@ struct webgpu_context_struct {
         mul_mat_pipelines;  // src0_type, src1_type, sg matrix, vectorized
 
     webgpu_pipeline mul_mat_pipeline[30][2];
+    // Specialized gemv for f16/f32
+    webgpu_pipeline mul_mat_gemv_pipeline;
     webgpu_pipeline set_rows_pipeline;
     webgpu_pipeline get_rows_pipeline[30];
     webgpu_pipeline get_rows_f32_no_vec_pipeline;
@@ -911,52 +913,73 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
     uint32_t wg_x =
         (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
 
-    bool use_fast = false;
-    switch (src1->type) {
-        case GGML_TYPE_F16:
-            use_fast = (src0->type == GGML_TYPE_F16);
-            break;
-        case GGML_TYPE_F32:
-            switch (src0->type) {
-                case GGML_TYPE_F32:
-                case GGML_TYPE_F16:
-                    use_fast = true;
-                    break;
-                default:
-                    break;
-            }
-            break;
-        default:
-            break;
-    }
+    // Use specialized gemv
+    if ((dst->ne[0] == 1 || dst->ne[1] == 1) && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {
+        // gemv_fast: 256 threads per workgroup, computes 16 outputs per workgroup (written as 4x vec4)
+        // Uses cooperative reduction and vec4 operations (requires K % 4 == 0 and outputs % 16 == 0)
+        uint32_t output_elements = (dst->ne[0] == 1) ? dst->ne[1] : dst->ne[0];
+        uint32_t batches         = dst->ne[2] * dst->ne[3];
 
-    if (use_fast) {
-        int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
-        int sg_matrix  = ctx->supports_subgroup_matrix && src0->ne[0] % ctx->subgroup_matrix_config.K == 0 &&
-                        dst->ne[0] % ctx->subgroup_matrix_config.M == 0 &&
-                        dst->ne[1] % ctx->subgroup_matrix_config.N == 0;
-        pipeline = ctx->mul_mat_pipelines[src0->type][src1->type][sg_matrix][vectorized];
+        // Use gemv_fast for larger vectors where reduction overhead pays off
+        // Requires K divisible by 4 for vec4 alignment, outputs divisible by 16 for optimal vec4 output
+        if (output_elements >= 64 && src0->ne[0] % 4 == 0 && output_elements % 16 == 0) {
+            // Each workgroup computes 16 consecutive outputs (4x vec4 writes)
+            uint32_t output_vec4_groups = output_elements / 16;
+            uint32_t wg_x   = output_vec4_groups * batches;
 
-        uint32_t wg_m;
-        uint32_t wg_n;
-        if (sg_matrix) {
-            // The total number of subgroups/workgroups needed per matrix.
-            uint32_t wg_m_sg_tile =
-                WEBGPU_MUL_MAT_SUBGROUP_M * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->subgroup_matrix_config.M;
-            wg_m = (dst->ne[0] + wg_m_sg_tile - 1) / wg_m_sg_tile;
-            uint32_t wg_n_sg_tile =
-                WEBGPU_MUL_MAT_SUBGROUP_N * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->subgroup_matrix_config.N;
-            wg_n = (dst->ne[1] + wg_n_sg_tile - 1) / wg_n_sg_tile;
+            return ggml_backend_webgpu_build(ctx, ctx->mul_mat_gemv_pipeline, params, entries, wg_x);
         } else {
-            uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * WEBGPU_MUL_MAT_WG_SIZE_M;
-            uint32_t tile_n_s = WEBGPU_MUL_MAT_TILE_N * WEBGPU_MUL_MAT_WG_SIZE_N;
-            wg_m              = (dst->ne[0] + tile_m_s - 1) / tile_m_s;
-            wg_n              = (dst->ne[1] + tile_n_s - 1) / tile_n_s;
+            // Small vectors, unaligned K, or outputs not divisible by 16: use template shader
+            return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
         }
-        wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
-    }
+    } else {
+        bool use_fast = false;
+        switch (src1->type) {
+            case GGML_TYPE_F16:
+                use_fast = (src0->type == GGML_TYPE_F16);
+                break;
+            case GGML_TYPE_F32:
+                switch (src0->type) {
+                    case GGML_TYPE_F32:
+                    case GGML_TYPE_F16:
+                        use_fast = true;
+                        break;
+                    default:
+                        break;
+                }
+                break;
+            default:
+                break;
+        }
 
-    return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
+        if (use_fast) {
+            int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
+            int sg_matrix  = ctx->supports_subgroup_matrix && src0->ne[0] % ctx->subgroup_matrix_config.K == 0 &&
+                            dst->ne[0] % ctx->subgroup_matrix_config.M == 0 &&
+                            dst->ne[1] % ctx->subgroup_matrix_config.N == 0;
+            pipeline = ctx->mul_mat_pipelines[src0->type][src1->type][sg_matrix][vectorized];
+
+            uint32_t wg_m;
+            uint32_t wg_n;
+            if (sg_matrix) {
+                // The total number of subgroups/workgroups needed per matrix.
+                uint32_t wg_m_sg_tile =
+                    WEBGPU_MUL_MAT_SUBGROUP_M * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->subgroup_matrix_config.M;
+                wg_m = (dst->ne[0] + wg_m_sg_tile - 1) / wg_m_sg_tile;
+                uint32_t wg_n_sg_tile =
+                    WEBGPU_MUL_MAT_SUBGROUP_N * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->subgroup_matrix_config.N;
+                wg_n = (dst->ne[1] + wg_n_sg_tile - 1) / wg_n_sg_tile;
+            } else {
+                uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * WEBGPU_MUL_MAT_WG_SIZE_M;
+                uint32_t tile_n_s = WEBGPU_MUL_MAT_TILE_N * WEBGPU_MUL_MAT_WG_SIZE_N;
+                wg_m              = (dst->ne[0] + tile_m_s - 1) / tile_m_s;
+                wg_n              = (dst->ne[1] + tile_n_s - 1) / tile_n_s;
+            }
+            wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
+        }
+
+        return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
+    }
 }
 
 static webgpu_command ggml_webgpu_binary_op(webgpu_context &  ctx,
@@ -1777,6 +1800,9 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
     webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F16][GGML_TYPE_F16][0][1] =
         ggml_webgpu_create_pipeline2(webgpu_ctx->device, wgsl_mul_mat_reg_tile_f16_f16_vec,
                                      "mul_mat_reg_tile_f16_f16_vec", mul_mat_reg_tile_constants);
+
+    webgpu_ctx->mul_mat_gemv_pipeline = ggml_webgpu_create_pipeline2(
+        webgpu_ctx->device, wgsl_gemv_f16_f32, "gemv_f16_f32");
 }
 
 static void ggml_webgpu_init_set_rows_pipeline(webgpu_context & webgpu_ctx) {
