@@ -156,6 +156,9 @@ override TILE_K: u32;
 // Note: we assume TILE_K is divisible by SUBGROUP_MATRIX_K;
 override SUBGROUP_MATRIX_K_SIZE: u32;
 
+override WG_M_SG_TILE_SIZE = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+override WG_N_SG_TILE_SIZE = SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
+
 override TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE;
 override TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 override TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
@@ -177,12 +180,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
     let wg_linear = global_id.x / TOTAL_WORKGROUP_SIZE;
 
-    let subgroups_m = (params.m + SUBGROUP_MATRIX_M_SIZE - 1) / SUBGROUP_MATRIX_M_SIZE;
-    let subgroups_per_wg_m = SUBGROUP_M * SUBGROUP_MATRIX_M;
-    let wg_m_count = (subgroups_m + subgroups_per_wg_m - 1) / subgroups_per_wg_m;
-    let subgroups_n = (params.n + SUBGROUP_MATRIX_N_SIZE - 1) / SUBGROUP_MATRIX_N_SIZE;
-    let subgroups_per_wg_n = SUBGROUP_N * SUBGROUP_MATRIX_N;
-    let wg_n_count = (subgroups_n + subgroups_per_wg_n - 1) / subgroups_per_wg_n;
+    let wg_m_count = (params.m + WG_M_SG_TILE_SIZE - 1) / WG_M_SG_TILE_SIZE;
+    let wg_n_count = (params.n + WG_N_SG_TILE_SIZE - 1) / WG_N_SG_TILE_SIZE;
     let wg_per_matrix = wg_m_count * wg_n_count;
 
     let batch_idx = wg_linear / wg_per_matrix;
@@ -273,10 +272,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
     for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
         let global_row = dst_row_base + n * SUBGROUP_MATRIX_N_SIZE;
-        for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-            let global_col = dst_col_base + m * SUBGROUP_MATRIX_M_SIZE;
-            let dst_idx = dst_batch_offset + global_row * params.m + global_col;
-            subgroupMatrixStore(&dst, dst_idx, acc_sg_mat[m][n], true, params.m);
+        if (global_row < params.n) {
+            for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+                let global_col = dst_col_base + m * SUBGROUP_MATRIX_M_SIZE;
+                if (global_col < params.m) {
+                    let dst_idx = dst_batch_offset + global_row * params.m + global_col;
+                    subgroupMatrixStore(&dst, dst_idx, acc_sg_mat[m][n], true, params.m);
+                }
+            }
         }
     }
 }
