@@ -142,30 +142,29 @@ struct MulMatParams {
 
 DECLS
 
-// Number of threads per workgroup: SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE
-// Shared memory src0: SUBGROUP_M * SUBGROUP_MATRIX_M * TILE_K
-// Shared memory src1: SUBGROUP_N * SUBGROUP_MATRIX_N * TILE_K
-// TILE_K must be divisible by SUBGROUP_MATRIX_K
-
 override SUBGROUP_M: u32;
-override SUBGROUP_MATRIX_M: u32;
+override SUBGROUP_MATRIX_M_SIZE: u32;
 override SUBGROUP_N: u32;
-override SUBGROUP_MATRIX_N: u32;
+override SUBGROUP_MATRIX_N_SIZE: u32;
 override SUBGROUP_SIZE: u32;
+
+// Note: must match values in ggml-webgpu.cpp
+const SUBGROUP_MATRIX_M = 4u;
+const SUBGROUP_MATRIX_N = 2u;
 
 override TILE_K: u32;
 // Note: we assume TILE_K is divisible by SUBGROUP_MATRIX_K;
-override SUBGROUP_MATRIX_K: u32;
+override SUBGROUP_MATRIX_K_SIZE: u32;
 
 override TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE;
-override TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M;
-override TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N;
+override TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+override TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
 // Note: apparently current dawn doesn't like override constant shared memory size along with subgroup matrix loads
 //var<workgroup> src0_shmem: array<f32, TILE_SRC0_SHMEM>;
 //var<workgroup> src1_shmem: array<f32, TILE_SRC1_SHMEM>;
-var<workgroup> src0_shmem: array<f32, 512>;
-var<workgroup> src1_shmem: array<f32, 512>;
+var<workgroup> src0_shmem: array<f32, 2048>;
+var<workgroup> src1_shmem: array<f32, 1024>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
@@ -178,10 +177,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
     let wg_linear = global_id.x / TOTAL_WORKGROUP_SIZE;
 
-    let subgroups_m = (params.m + SUBGROUP_MATRIX_M - 1) / SUBGROUP_MATRIX_M;
-    let wg_m_count = subgroups_m / SUBGROUP_M;
-    let subgroups_n = (params.n + SUBGROUP_MATRIX_N - 1) / SUBGROUP_MATRIX_N;
-    let wg_n_count = subgroups_n / SUBGROUP_N;
+    let subgroups_m = (params.m + SUBGROUP_MATRIX_M_SIZE - 1) / SUBGROUP_MATRIX_M_SIZE;
+    let subgroups_per_wg_m = SUBGROUP_M * SUBGROUP_MATRIX_M;
+    let wg_m_count = (subgroups_m + subgroups_per_wg_m - 1) / subgroups_per_wg_m;
+    let subgroups_n = (params.n + SUBGROUP_MATRIX_N_SIZE - 1) / SUBGROUP_MATRIX_N_SIZE;
+    let subgroups_per_wg_n = SUBGROUP_N * SUBGROUP_MATRIX_N;
+    let wg_n_count = (subgroups_n + subgroups_per_wg_n - 1) / subgroups_per_wg_n;
     let wg_per_matrix = wg_m_count * wg_n_count;
 
     let batch_idx = wg_linear / wg_per_matrix;
@@ -189,7 +190,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let wg_in_batch = wg_linear % wg_per_matrix;
     let wg_m = wg_in_batch % wg_m_count;
     let wg_n = wg_in_batch / wg_m_count;
-
 
     let dst2_stride = params.m * params.n;
     let dst3_stride = dst2_stride * params.bs02 * params.broadcast2;
@@ -204,14 +204,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let src0_batch_offset = params.offset_src0 + src03_idx * params.stride_03 + src02_idx * params.stride_02;
     let src1_batch_offset = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
 
-    var acc_sg_mat : subgroup_matrix_result<f32, 8, 8>;
+    var acc_sg_mat : array<array<subgroup_matrix_result<f32, 8, 8>, SUBGROUP_MATRIX_N>, SUBGROUP_MATRIX_M>;
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
         for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC0_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
             let tile_m = elem_idx / TILE_K;
             let tile_k = elem_idx % TILE_K;
-            let global_m = wg_m * SUBGROUP_M * SUBGROUP_MATRIX_M + tile_m;
+            let global_m = wg_m * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE + tile_m;
             let global_k = k_outer + tile_k;
             let src0_idx = src0_batch_offset + global_m * params.stride_01 + global_k;
             let src0_val = select( // taking a slight performance hit to avoid oob
@@ -224,7 +224,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
         for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC1_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
             let tile_n = elem_idx / TILE_K;
             let tile_k = elem_idx % TILE_K;
-            let global_n = wg_n * SUBGROUP_N * SUBGROUP_MATRIX_N + tile_n;
+            let global_n = wg_n * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE + tile_n;
             let global_k = k_outer + tile_k;
 
             let src1_idx = src1_batch_offset + global_n * params.stride_11 + global_k;
@@ -237,37 +237,48 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
         workgroupBarrier();
 
-        let k_end = min(TILE_K, params.k - k_outer);
+        for (var k_inner = 0u; k_inner < TILE_K; k_inner += SUBGROUP_MATRIX_K_SIZE) {
 
-        for (var k_inner = 0u; k_inner < TILE_K; k_inner += SUBGROUP_MATRIX_K) {
+            let src0_shmem_idx_base = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE * TILE_K + k_inner;
+            var src0_sg_mats: array<subgroup_matrix_left<f32, 8, 8>, SUBGROUP_MATRIX_M>;
+            for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+                src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f32, 8, 8>>(
+                    &src0_shmem,
+                    src0_shmem_idx_base + m * SUBGROUP_MATRIX_M_SIZE * TILE_K,
+                    false,
+                    TILE_K
+                );
+            }
 
-            let src0_shmem_idx = subgroup_m * SUBGROUP_MATRIX_M * TILE_K + k_inner;
-            let src0_sg_mat = subgroupMatrixLoad<subgroup_matrix_left<f32, 8, 8>>(
-                &src0_shmem,
-                src0_shmem_idx,
-                false,
-                TILE_K
-            );
-
-            let src1_shmem_idx = subgroup_n * SUBGROUP_MATRIX_N * TILE_K + k_inner;
-            let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f32, 8, 8>>(
-                &src1_shmem,
-                src1_shmem_idx,
-                true,
-                TILE_K
-            );
-
-            acc_sg_mat = subgroupMatrixMultiplyAccumulate(src0_sg_mat, src1_sg_mat, acc_sg_mat);
+            let src1_shmem_idx_base = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE * TILE_K + k_inner;
+            for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
+                let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f32, 8, 8>>(
+                    &src1_shmem,
+                    src1_shmem_idx_base + n * SUBGROUP_MATRIX_N_SIZE * TILE_K,
+                    true,
+                    TILE_K
+                );
+                for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+                    acc_sg_mat[m][n] = subgroupMatrixMultiplyAccumulate(src0_sg_mats[m], src1_sg_mat, acc_sg_mat[m][n]);
+                }
+            }
         }
 
         workgroupBarrier();
     }
 
     let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;
-    let dst_row_base = (wg_n * SUBGROUP_N + subgroup_n) * SUBGROUP_MATRIX_N;
-    let dst_col_base = (wg_m * SUBGROUP_M + subgroup_m) * SUBGROUP_MATRIX_M;
-    let dst_idx = dst_batch_offset + dst_row_base * params.m + dst_col_base;
-    subgroupMatrixStore(&dst, dst_idx, acc_sg_mat, true, params.m);
+    let dst_row_base = (wg_n * SUBGROUP_N + subgroup_n) * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
+    let dst_col_base = (wg_m * SUBGROUP_M + subgroup_m) * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+
+    for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
+        let global_row = dst_row_base + n * SUBGROUP_MATRIX_N_SIZE;
+        for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+            let global_col = dst_col_base + m * SUBGROUP_MATRIX_M_SIZE;
+            let dst_idx = dst_batch_offset + global_row * params.m + global_col;
+            subgroupMatrixStore(&dst, dst_idx, acc_sg_mat[m][n], true, params.m);
+        }
+    }
 }
 
 #end(SHADER)
