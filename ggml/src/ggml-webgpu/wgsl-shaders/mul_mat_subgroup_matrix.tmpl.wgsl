@@ -72,10 +72,10 @@ fn zero_val_src0() -> {{SRC0_TYPE}} {
 }
 
 fn store_src0_shmem(val: {{SRC0_TYPE}}, idx: u32) {
-    src0_shmem[idx] = f32(val.x);
-    src0_shmem[idx + 1] = f32(val.y);
-    src0_shmem[idx + 2] = f32(val.z);
-    src0_shmem[idx + 3] = f32(val.w);
+    src0_shmem[idx] = f16(val.x);
+    src0_shmem[idx + 1] = f16(val.y);
+    src0_shmem[idx + 2] = f16(val.z);
+    src0_shmem[idx + 3] = f16(val.w);
 }
 
 fn zero_val_src1() -> {{SRC1_TYPE}} {
@@ -83,10 +83,10 @@ fn zero_val_src1() -> {{SRC1_TYPE}} {
 }
 
 fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
-    src1_shmem[idx] = f32(val.x);
-    src1_shmem[idx + 1] = f32(val.y);
-    src1_shmem[idx + 2] = f32(val.z);
-    src1_shmem[idx + 3] = f32(val.w);
+    src1_shmem[idx] = f16(val.x);
+    src1_shmem[idx + 1] = f16(val.y);
+    src1_shmem[idx + 2] = f16(val.z);
+    src1_shmem[idx + 3] = f16(val.w);
 }
 #enddecl(SHMEM_VEC)
 
@@ -96,7 +96,7 @@ fn zero_val_src0() -> {{SRC0_TYPE}} {
 }
 
 fn store_src0_shmem(val: {{SRC0_TYPE}}, idx: u32) {
-    src0_shmem[idx] = f32(val);
+    src0_shmem[idx] = f16(val);
 }
 
 fn zero_val_src1() -> {{SRC1_TYPE}} {
@@ -104,7 +104,7 @@ fn zero_val_src1() -> {{SRC1_TYPE}} {
 }
 
 fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
-    src1_shmem[idx] = f32(val);
+    src1_shmem[idx] = f16(val);
 }
 #enddecl(SHMEM_SCALAR)
 
@@ -163,11 +163,16 @@ override TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE;
 override TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 override TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
+override SG_MAT_ACCUM_SHMEM = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_M_SIZE * SUBGROUP_MATRIX_N_SIZE;
+
+// We reuse src0_shmem for accumulation matrices
+override SHMEM_SIZE = max(TILE_SRC0_SHMEM, SG_MAT_ACCUM_SHMEM);
+
 // Note: apparently current dawn doesn't like override constant shared memory size along with subgroup matrix loads
-//var<workgroup> src0_shmem: array<f32, TILE_SRC0_SHMEM>;
+//var<workgroup> src0_shmem: array<f32, SHMEM_SIZE>;
 //var<workgroup> src1_shmem: array<f32, TILE_SRC1_SHMEM>;
-var<workgroup> src0_shmem: array<f32, 2048>;
-var<workgroup> src1_shmem: array<f32, 1024>;
+var<workgroup> src0_shmem: array<f16, 2048>;
+var<workgroup> src1_shmem: array<f16, 1024>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
@@ -203,7 +208,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let src0_batch_offset = params.offset_src0 + src03_idx * params.stride_03 + src02_idx * params.stride_02;
     let src1_batch_offset = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
 
-    var acc_sg_mat : array<array<subgroup_matrix_result<f32, 8, 8>, SUBGROUP_MATRIX_N>, SUBGROUP_MATRIX_M>;
+    var acc_sg_mat : array<array<subgroup_matrix_result<f16, 8, 8>, SUBGROUP_MATRIX_N>, SUBGROUP_MATRIX_M>;
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
@@ -239,9 +244,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
         for (var k_inner = 0u; k_inner < TILE_K; k_inner += SUBGROUP_MATRIX_K_SIZE) {
 
             let src0_shmem_idx_base = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE * TILE_K + k_inner;
-            var src0_sg_mats: array<subgroup_matrix_left<f32, 8, 8>, SUBGROUP_MATRIX_M>;
+            var src0_sg_mats: array<subgroup_matrix_left<f16, 8, 8>, SUBGROUP_MATRIX_M>;
             for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-                src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f32, 8, 8>>(
+                src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f16, 8, 8>>(
                     &src0_shmem,
                     src0_shmem_idx_base + m * SUBGROUP_MATRIX_M_SIZE * TILE_K,
                     false,
@@ -251,7 +256,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
             let src1_shmem_idx_base = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE * TILE_K + k_inner;
             for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
-                let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f32, 8, 8>>(
+                let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f16, 8, 8>>(
                     &src1_shmem,
                     src1_shmem_idx_base + n * SUBGROUP_MATRIX_N_SIZE * TILE_K,
                     true,
@@ -267,19 +272,42 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     }
 
     let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;
-    let dst_row_base = (wg_n * SUBGROUP_N + subgroup_n) * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
-    let dst_col_base = (wg_m * SUBGROUP_M + subgroup_m) * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+
+
+    // Stage the subgroup matrix tiles into shared memory
+    // This uses WG_M_SG_TILE_SIZE as the stride (number of columns in the workgroup tile).
+    let WG_TILE_STRIDE = WG_M_SG_TILE_SIZE;
+    let tile_row_base_local = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
+    let tile_col_base_local = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 
     for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
-        let global_row = dst_row_base + n * SUBGROUP_MATRIX_N_SIZE;
-        if (global_row < params.n) {
-            for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-                let global_col = dst_col_base + m * SUBGROUP_MATRIX_M_SIZE;
-                if (global_col < params.m) {
-                    let dst_idx = dst_batch_offset + global_row * params.m + global_col;
-                    subgroupMatrixStore(&dst, dst_idx, acc_sg_mat[m][n], true, params.m);
-                }
-            }
+        for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+            let local_row = tile_row_base_local + n * SUBGROUP_MATRIX_N_SIZE;
+            let local_col = tile_col_base_local + m * SUBGROUP_MATRIX_M_SIZE;
+            let out_base = local_row * WG_TILE_STRIDE + local_col;
+            subgroupMatrixStore(&src0_shmem, out_base, acc_sg_mat[m][n], true, WG_TILE_STRIDE);
+        }
+    }
+
+    workgroupBarrier();
+
+    // Cooperative write: iterate over the entire workgroup tile
+    let tile_rows = WG_N_SG_TILE_SIZE;
+    let tile_cols = WG_M_SG_TILE_SIZE;
+    let total_tile_elems = tile_rows * tile_cols;
+    let tile_dst_row_base = wg_n * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
+    let tile_dst_col_base = wg_m * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+
+    for (var idx = thread_id; idx < total_tile_elems; idx += TOTAL_WORKGROUP_SIZE) {
+        let local_row = idx / WG_TILE_STRIDE;
+        let local_col = idx % WG_TILE_STRIDE;
+
+        let global_row = tile_dst_row_base + local_row;
+        let global_col = tile_dst_col_base + local_col;
+
+        if (global_row < params.n && global_col < params.m) {
+            let dst_idx = dst_batch_offset + global_row * params.m + global_col;
+            dst[dst_idx] = f32(src0_shmem[idx]);
         }
     }
 }
