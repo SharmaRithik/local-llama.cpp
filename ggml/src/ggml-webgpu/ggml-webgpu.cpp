@@ -2317,6 +2317,17 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     info.nextInChain = &subgroup_matrix_configs;
     ctx->adapter.GetInfo(&info);
 
+    // print configs
+    for (int i = 0; i < subgroup_matrix_configs.configCount; i++) {
+        const wgpu::SubgroupMatrixConfig config = subgroup_matrix_configs.configs[i];
+        std::cout << "ggml_webgpu: Subgroup Matrix Config " << i << ":\n";
+        std::cout << " M: " << config.M << "\n";
+        std::cout << " N: " << config.N << "\n";
+        std::cout << " K: " << config.K << "\n";
+        std::cout << " Component Type: " << static_cast<int>(config.componentType) << "\n";
+        std::cout << " Result Type: " << static_cast<int>(config.resultComponentType) << "\n";
+    }
+
     ctx->subgroup_matrix_config = *subgroup_matrix_configs.configs;
     wgpu::SupportedFeatures features;
     ctx->adapter.GetFeatures(&features);
