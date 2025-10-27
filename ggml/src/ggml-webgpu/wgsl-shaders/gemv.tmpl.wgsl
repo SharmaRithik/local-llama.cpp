@@ -1,0 +1,212 @@
+#define(VARIANTS)
+[
+  {
+    "SHADER_SUFFIX": "f32_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "vec4<f32>",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE": "vec4<f32>",
+      "VEC_SIZE" : "4",
+    },
+    "DECLS": ["VEC"]
+  },
+  {
+    "SHADER_SUFFIX": "f32_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f32",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE": "f32",
+      "VEC_SIZE" : "1",
+    },
+    "DECLS": ["SCALAR"]
+  },
+  {
+    "SHADER_SUFFIX": "f16_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "vec4<f16>",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE": "vec4<f32>",
+      "VEC_SIZE" : "4",
+    },
+    "DECLS": ["VEC"]
+  },
+  {
+    "SHADER_SUFFIX": "f16_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE": "f32",
+      "VEC_SIZE" : "1",
+    },
+    "DECLS": ["SCALAR"]
+  },
+  {
+    "SHADER_SUFFIX": "f16_f16_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "vec4<f16>",
+      "SRC1_TYPE" : "vec4<f16>",
+      "DST_TYPE": "vec4<f32>",
+      "VEC_SIZE" : "4",
+    },
+    "DECLS": ["VEC"]
+  },
+  {
+    "SHADER_SUFFIX": "f16_f16",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f16",
+      "DST_TYPE": "f32",
+      "VEC_SIZE" : "1",
+    },
+    "DECLS": ["SCALAR"]
+  }
+]
+
+#end(VARIANTS)
+
+#define(DECLS)
+
+#decl(VEC)
+fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
+    return f32(dot({{SRC1_TYPE}}(src0_val), src1_val));
+}
+
+fn store_val(group_base: u32) -> vec4<f32> {
+    return vec4<f32>(partial_sums[group_base],
+                     partial_sums[group_base + THREADS_PER_OUTPUT],
+                     partial_sums[group_base + THREADS_PER_OUTPUT * 2],
+                     partial_sums[group_base + THREADS_PER_OUTPUT * 3]);
+}
+#enddecl(VEC)
+
+#decl(SCALAR)
+fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
+    return f32(src0_val) * f32(src1_val);
+}
+
+fn store_val(group_base: u32) -> f32 {
+    return partial_sums[group_base];
+}
+#enddecl(SCALAR)
+
+#end(DECLS)
+
+#define(SHADER)
+enable f16;
+
+DECLS
+
+struct MulMatParams {
+    offset_src0: u32,
+    offset_src1: u32,
+    offset_dst: u32,
+    m: u32,
+    n: u32,
+    k: u32,
+    stride_01: u32,
+    stride_11: u32,
+    stride_02: u32,
+    stride_12: u32,
+    stride_03: u32,
+    stride_13: u32,
+    bs02: u32,
+    bs03: u32,
+    broadcast2: u32,
+    broadcast3: u32
+};
+
+@group(0) @binding(0) var<storage, read_write> src0: array<{{SRC0_TYPE}}>; // Matrix (M x K)
+@group(0) @binding(1) var<storage, read_write> src1: array<{{SRC1_TYPE}}>; // Vector (K x 1, transposed
+@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>;  // Result vector (transposed)
+
+@group(0) @binding(3) var<uniform> params: MulMatParams;
+
+override WORKGROUP_SIZE: u32;
+override TILE_K: u32;
+override OUTPUTS_PER_WG: u32;
+override THREADS_PER_OUTPUT = WORKGROUP_SIZE / OUTPUTS_PER_WG;
+
+// Shared memory for collaborative loading and reduction
+var<workgroup> shared_vector: array<{{SRC1_TYPE}}, TILE_K/{{VEC_SIZE}}>;  // Cache vector tile
+var<workgroup> partial_sums: array<f32, WORKGROUP_SIZE>;   // For reduction
+
+@compute @workgroup_size(WORKGROUP_SIZE)
+fn main(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+    @builtin(num_workgroups) num_wg: vec3<u32>) {
+    let thread_id = local_id.x;
+
+    // Handle batch dimensions
+    let total_batches = params.bs02 * params.broadcast2 * params.bs03 * params.broadcast3;
+    let wg_linear = wg_id.y * num_wg.x + wg_id.x;
+    let output_groups = (params.m + OUTPUTS_PER_WG - 1u) / OUTPUTS_PER_WG;
+    let batch_idx = wg_linear / output_groups;
+    if (batch_idx >= total_batches) {
+        return;
+    }
+
+    // Which of the outputs does this thread belong to?
+    let thread_group = thread_id / THREADS_PER_OUTPUT;
+    let thread_in_group = thread_id % THREADS_PER_OUTPUT;
+
+    // Each workgroup computes OUTPUTS_PER_WG consecutive outputs
+    let output_row = (wg_linear % output_groups) * OUTPUTS_PER_WG + thread_group;
+
+    let dst2_stride = params.m * params.n;
+    let dst2_idx = batch_idx % (params.bs02 * params.broadcast2);
+    let dst3_stride = dst2_stride * params.bs02 * params.broadcast2;
+    let dst3_idx = batch_idx / (params.bs02 * params.broadcast2);
+    let src03_idx = dst3_idx / params.broadcast3;
+    let src13_idx = dst3_idx;
+    let src02_idx = dst2_idx / params.broadcast2;
+    let src12_idx = dst2_idx;
+
+    let src0_idx_base = params.offset_src0 + src03_idx * params.stride_03 + src02_idx * params.stride_02 + output_row * params.stride_01;
+    let src1_idx_base = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
+    let dst_idx = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride + output_row;
+
+    var local_sum = 0.0;
+
+    // Each thread processes multiple K elements and accumulates
+    for (var k_tile = 0u; k_tile < params.k; k_tile += TILE_K) {
+        let tile_size = min(TILE_K, params.k - k_tile);
+
+        // Cooperatively load vector tile into shared memory (all threads)
+        for (var i = thread_id * {{VEC_SIZE}}; i < tile_size; i += WORKGROUP_SIZE * {{VEC_SIZE}}) {
+            shared_vector[i / {{VEC_SIZE}}] = src1[(src1_idx_base + k_tile + i) / {{VEC_SIZE}}];
+        }
+
+        workgroupBarrier();
+
+        if (output_row < params.m) {
+            for (var i = thread_in_group * {{VEC_SIZE}}; i < tile_size; i += THREADS_PER_OUTPUT * {{VEC_SIZE}}) {
+                let a = src0[(src0_idx_base + k_tile + i) / {{VEC_SIZE}}];
+                let b = shared_vector[i / {{VEC_SIZE}}];
+                local_sum += mul_acc(a, b);
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    // Store partial sums and reduce within each partition
+    partial_sums[thread_id] = local_sum;
+    workgroupBarrier();
+    let group_base = thread_group * THREADS_PER_OUTPUT;
+    let thread_base = group_base + thread_in_group;
+    var offset = THREADS_PER_OUTPUT / 2;
+    while (offset > 0) {
+        if (thread_in_group < offset) {
+            partial_sums[thread_base] += partial_sums[thread_base + offset];
+        }
+        offset = offset / 2;
+        workgroupBarrier();
+    }
+
+    // Store back to global memory
+    if (output_row < params.m && thread_group % {{VEC_SIZE}} == 0 && thread_in_group == 0) {
+        dst[dst_idx / {{VEC_SIZE}}] = store_val(group_base);
+    }
+}
+#end(SHADER)
