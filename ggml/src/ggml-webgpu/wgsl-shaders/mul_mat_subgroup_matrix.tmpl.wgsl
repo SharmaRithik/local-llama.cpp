@@ -72,10 +72,10 @@ fn zero_val_src0() -> {{SRC0_TYPE}} {
 }
 
 fn store_src0_shmem(val: {{SRC0_TYPE}}, idx: u32) {
-    src0_shmem[idx] = f16(val.x);
-    src0_shmem[idx + 1] = f16(val.y);
-    src0_shmem[idx + 2] = f16(val.z);
-    src0_shmem[idx + 3] = f16(val.w);
+    shmem[idx] = f16(val.x);
+    shmem[idx + 1] = f16(val.y);
+    shmem[idx + 2] = f16(val.z);
+    shmem[idx + 3] = f16(val.w);
 }
 
 fn zero_val_src1() -> {{SRC1_TYPE}} {
@@ -83,18 +83,18 @@ fn zero_val_src1() -> {{SRC1_TYPE}} {
 }
 
 fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
-    src1_shmem[idx] = f16(val.x);
-    src1_shmem[idx + 1] = f16(val.y);
-    src1_shmem[idx + 2] = f16(val.z);
-    src1_shmem[idx + 3] = f16(val.w);
+    shmem[idx] = f16(val.x);
+    shmem[idx + 1] = f16(val.y);
+    shmem[idx + 2] = f16(val.z);
+    shmem[idx + 3] = f16(val.w);
 }
 
 fn store_dst(shmem_idx: u32, dst_idx: u32) {
     dst[dst_idx] = vec4<f32>(
-        f32(src0_shmem[shmem_idx]),
-        f32(src0_shmem[shmem_idx + 1]),
-        f32(src0_shmem[shmem_idx + 2]),
-        f32(src0_shmem[shmem_idx + 3])
+        f32(shmem[shmem_idx]),
+        f32(shmem[shmem_idx + 1]),
+        f32(shmem[shmem_idx + 2]),
+        f32(shmem[shmem_idx + 3])
     );
 }
 #enddecl(SHMEM_VEC)
@@ -105,7 +105,7 @@ fn zero_val_src0() -> {{SRC0_TYPE}} {
 }
 
 fn store_src0_shmem(val: {{SRC0_TYPE}}, idx: u32) {
-    src0_shmem[idx] = f16(val);
+    shmem[idx] = f16(val);
 }
 
 fn zero_val_src1() -> {{SRC1_TYPE}} {
@@ -113,11 +113,11 @@ fn zero_val_src1() -> {{SRC1_TYPE}} {
 }
 
 fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
-    src1_shmem[idx] = f16(val);
+    shmem[idx] = f16(val);
 }
 
 fn store_dst(shmem_idx: u32, dst_idx: u32) {
-    dst[dst_idx] = f32(src0_shmem[shmem_idx]);
+    dst[dst_idx] = f32(shmem[shmem_idx]);
 }
 #enddecl(SHMEM_SCALAR)
 
@@ -155,37 +155,36 @@ struct MulMatParams {
 
 DECLS
 
-override SUBGROUP_M: u32;
-override SUBGROUP_MATRIX_M_SIZE: u32;
-override SUBGROUP_N: u32;
-override SUBGROUP_MATRIX_N_SIZE: u32;
-override SUBGROUP_SIZE: u32;
+// Note: These are string interpolated at build time, cannot use override constants due to limitations in
+// current Dawn version type definitions/matrix load requirements for constant memory sizes.
+const SUBGROUP_M = {{WEBGPU_SUBGROUP_M}}u;
+const SUBGROUP_N = {{WEBGPU_SUBGROUP_N}}u;
+const SUBGROUP_SIZE = {{WEBGPU_SUBGROUP_SIZE}}u;
 
-// Note: must match values in ggml-webgpu.cpp
-const SUBGROUP_MATRIX_M = 4u;
-const SUBGROUP_MATRIX_N = 2u;
+const SUBGROUP_MATRIX_M_SIZE = {{WEBGPU_SG_MAT_M_SIZE}}u;
+const SUBGROUP_MATRIX_N_SIZE = {{WEBGPU_SG_MAT_N_SIZE}}u;
+const SUBGROUP_MATRIX_K_SIZE = {{WEBGPU_SG_MAT_K_SIZE}}u;
 
-override TILE_K: u32;
-// Note: we assume TILE_K is divisible by SUBGROUP_MATRIX_K;
-override SUBGROUP_MATRIX_K_SIZE: u32;
+const SUBGROUP_MATRIX_M = {{WEBGPU_SUBGROUP_MATRIX_M}}u;
+const SUBGROUP_MATRIX_N = {{WEBGPU_SUBGROUP_MATRIX_N}}u;
 
-override WG_M_SG_TILE_SIZE = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
-override WG_N_SG_TILE_SIZE = SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
+const TILE_K = {{WEBGPU_TILE_K}}u;
 
-override TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE;
-override TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
-override TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
+const WG_M_SG_TILE_SIZE = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+const WG_N_SG_TILE_SIZE = SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
-override SG_MAT_ACCUM_SHMEM = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_M_SIZE * SUBGROUP_MATRIX_N_SIZE;
+const TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE;
+const TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+const TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
-// We reuse src0_shmem for accumulation matrices
-override SHMEM_SIZE = max(TILE_SRC0_SHMEM, SG_MAT_ACCUM_SHMEM);
+const SG_MAT_ACCUM_SHMEM = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_M_SIZE * SUBGROUP_MATRIX_N_SIZE;
+
+// We reuse shmem for accumulation matrices
+const SHMEM_SIZE = max(TILE_SRC0_SHMEM + TILE_SRC1_SHMEM, SG_MAT_ACCUM_SHMEM);
 
 // Note: apparently current dawn doesn't like override constant shared memory size along with subgroup matrix loads
-//var<workgroup> src0_shmem: array<f32, SHMEM_SIZE>;
-//var<workgroup> src1_shmem: array<f32, TILE_SRC1_SHMEM>;
-var<workgroup> src0_shmem: array<f16, 2048>;
-var<workgroup> src1_shmem: array<f16, 1024>;
+var<workgroup> shmem: array<f16, SHMEM_SIZE>;
+//var<workgroup> shmem: array<f16, 3072>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
@@ -221,7 +220,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let src0_batch_offset = params.offset_src0 + src03_idx * params.stride_03 + src02_idx * params.stride_02;
     let src1_batch_offset = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
 
-    var acc_sg_mat : array<array<subgroup_matrix_result<f16, 8, 8>, SUBGROUP_MATRIX_N>, SUBGROUP_MATRIX_M>;
+    var acc_sg_mat : array<array<subgroup_matrix_result<f16, SUBGROUP_MATRIX_N_SIZE, SUBGROUP_MATRIX_M_SIZE>, SUBGROUP_MATRIX_N>, SUBGROUP_MATRIX_M>;
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
@@ -249,7 +248,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
                 zero_val_src1(),
                 src1[src1_idx/{{VEC_SIZE}}],
                 global_n < params.n && global_k < params.k);
-            store_src1_shmem(src1_val, elem_idx);
+            store_src1_shmem(src1_val, TILE_SRC0_SHMEM + elem_idx);
         }
 
         workgroupBarrier();
@@ -257,10 +256,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
         for (var k_inner = 0u; k_inner < TILE_K; k_inner += SUBGROUP_MATRIX_K_SIZE) {
 
             let src0_shmem_idx_base = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE * TILE_K + k_inner;
-            var src0_sg_mats: array<subgroup_matrix_left<f16, 8, 8>, SUBGROUP_MATRIX_M>;
+            var src0_sg_mats: array<subgroup_matrix_left<f16, SUBGROUP_MATRIX_K_SIZE, SUBGROUP_MATRIX_M_SIZE>, SUBGROUP_MATRIX_M>;
             for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-                src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f16, 8, 8>>(
-                    &src0_shmem,
+                src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f16, SUBGROUP_MATRIX_K_SIZE, SUBGROUP_MATRIX_M_SIZE>>(
+                    &shmem,
                     src0_shmem_idx_base + m * SUBGROUP_MATRIX_M_SIZE * TILE_K,
                     false,
                     TILE_K
@@ -269,9 +268,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
             let src1_shmem_idx_base = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE * TILE_K + k_inner;
             for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
-                let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f16, 8, 8>>(
-                    &src1_shmem,
-                    src1_shmem_idx_base + n * SUBGROUP_MATRIX_N_SIZE * TILE_K,
+                let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f16, SUBGROUP_MATRIX_N_SIZE, SUBGROUP_MATRIX_K_SIZE>>(
+                    &shmem,
+                    TILE_SRC0_SHMEM + src1_shmem_idx_base + n * SUBGROUP_MATRIX_N_SIZE * TILE_K,
                     true,
                     TILE_K
                 );
@@ -298,7 +297,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
             let local_row = tile_row_base_local + n * SUBGROUP_MATRIX_N_SIZE;
             let local_col = tile_col_base_local + m * SUBGROUP_MATRIX_M_SIZE;
             let out_base = local_row * WG_TILE_STRIDE + local_col;
-            subgroupMatrixStore(&src0_shmem, out_base, acc_sg_mat[m][n], true, WG_TILE_STRIDE);
+            subgroupMatrixStore(&shmem, out_base, acc_sg_mat[m][n], true, WG_TILE_STRIDE);
         }
     }
 
