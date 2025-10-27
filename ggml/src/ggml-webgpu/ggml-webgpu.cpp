@@ -281,8 +281,7 @@ struct webgpu_context_struct {
     std::map<int, std::map<int, std::map<int, webgpu_pipeline>>> gemv_pipelines;     // src0_type, src1_type, vectorized
 
     webgpu_pipeline mul_mat_pipeline[30][2];
-    // Specialized gemv for f16/f32
-    webgpu_pipeline set_rows_pipeline;
+    webgpu_pipeline set_rows_pipeline[1][2];  // dst->type, vectorized
     webgpu_pipeline get_rows_pipeline[30];
     webgpu_pipeline get_rows_f32_no_vec_pipeline;
     webgpu_pipeline cpy_pipeline[2][2];          // src type, dst type
@@ -844,10 +843,20 @@ static std::optional<webgpu_command> ggml_webgpu_set_rows(webgpu_context & ctx,
         { .binding = 3, .buffer = error_bufs.dev_buf, .offset = 0, .size = error_bufs.dev_buf.GetSize() }
     };
 
-    size_t   max_wg_size = ctx->max_wg_size_x;
-    uint32_t wg_x        = (src->ne[1] * src->ne[2] * src->ne[3] + max_wg_size - 1) / max_wg_size;
+    size_t max_wg_size = ctx->max_wg_size_x;
 
-    return ggml_backend_webgpu_build(ctx, ctx->set_rows_pipeline, params, entries, wg_x, 1, error_bufs);
+    int             vectorized = src->ne[0] % 4 == 0;
+    webgpu_pipeline pipeline   = ctx->set_rows_pipeline[0][vectorized];
+    uint32_t        threads;
+    if (vectorized) {
+        threads = (src->ne[1] * src->ne[2] * src->ne[3]) * (src->ne[0] / 4);
+    } else {
+        threads = src->ne[0] * src->ne[1] * src->ne[2] * src->ne[3];
+    }
+
+    uint32_t wg_x = (threads + max_wg_size - 1) / max_wg_size;
+
+    return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x, 1, error_bufs);
 }
 
 static webgpu_command ggml_webgpu_get_rows(webgpu_context & ctx,
@@ -1878,8 +1887,10 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
 }
 
 static void ggml_webgpu_init_set_rows_pipeline(webgpu_context & webgpu_ctx) {
-    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline, wgsl_set_rows, "set_rows",
-                                ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
+    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline[0][0], wgsl_set_rows_f16,
+                                "set_rows_f16", ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
+    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline[0][1], wgsl_set_rows_f16_vec,
+                                "set_rows_f16_vec", ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
 }
 
 static void ggml_webgpu_init_get_rows_pipeline(webgpu_context & webgpu_ctx) {
@@ -2436,6 +2447,10 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     required_features.push_back(wgpu::FeatureName::TimestampQuery);
 #endif
 
+    // Enable Dawn-specific toggles to increase native performance
+    // TODO: Don't enable for WASM builds, they won't have an effect anyways
+    // TODO: Maybe WebGPU needs a "fast" mode where you can request compilers skip adding checks like these,
+    //       only for native performance?
     const char * const deviceEnabledToggles[]  = { "skip_validation", "disable_robustness", "disable_workgroup_init",
                                                    "disable_polyfills_on_integer_div_and_mod" };
     const char * const deviceDisabledToggles[] = { "timestamp_quantization" };
