@@ -141,22 +141,20 @@ var<workgroup> src0_shmem: array<{{SRC0_TYPE}}, TILE_SRC0_SHMEM/{{VEC_SIZE}}>;
 var<workgroup> src1_shmem: array<{{SRC1_TYPE}}, TILE_SRC1_SHMEM/{{VEC_SIZE}}>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
+fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
         @builtin(local_invocation_id) local_id: vec3<u32>) {
 
     let thread_id = local_id.x;
     let local_m = get_local_m(thread_id);
     let local_n = get_local_n(thread_id);
 
-    let wg_linear = global_id.x / TOTAL_WORKGROUP_SIZE;
-
     let wg_n_count = (params.n + WORKGROUP_SIZE_N * TILE_N - 1u) / (WORKGROUP_SIZE_N * TILE_N);
     let wg_m_count = (params.m + WORKGROUP_SIZE_M * TILE_M - 1u) / (WORKGROUP_SIZE_M * TILE_M);
     let wg_per_matrix = wg_m_count * wg_n_count;
 
-    let batch_idx = wg_linear / wg_per_matrix;
+    let batch_idx = wg_id.x / wg_per_matrix;
 
-    let wg_in_batch = wg_linear % wg_per_matrix;
+    let wg_in_batch = wg_id.x % wg_per_matrix;
     let wg_m = wg_in_batch % wg_m_count;
     let wg_n = wg_in_batch / wg_m_count;
 

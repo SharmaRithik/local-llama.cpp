@@ -105,6 +105,7 @@ fn store_dst(shmem_idx: u32, dst_idx: u32) {
 #define(SHADER)
 diagnostic(off, chromium.subgroup_matrix_uniformity);
 enable f16;
+enable subgroups;
 enable chromium_experimental_subgroup_matrix;
 
 struct MulMatParams {
@@ -138,7 +139,11 @@ DECLS
 // current Dawn version type definitions/matrix load requirements for constant memory sizes.
 const SUBGROUP_M = {{WEBGPU_SUBGROUP_M}}u;
 const SUBGROUP_N = {{WEBGPU_SUBGROUP_N}}u;
-const SUBGROUP_SIZE = {{WEBGPU_SUBGROUP_SIZE}}u;
+// For portability we assume the max subgroup size, meaning some subgroups will be masked out if the
+// runtime subgroup size is smaller.
+const MAX_SUBGROUP_SIZE = {{WEBGPU_MAX_SUBGROUP_SIZE}}u;
+
+const EXPECTED_SUBGROUPS = SUBGROUP_M * SUBGROUP_N;
 
 const SUBGROUP_MATRIX_M_SIZE = {{WEBGPU_SG_MAT_M_SIZE}}u;
 const SUBGROUP_MATRIX_N_SIZE = {{WEBGPU_SG_MAT_N_SIZE}}u;
@@ -152,7 +157,7 @@ const TILE_K = {{WEBGPU_TILE_K}}u;
 const WG_M_SG_TILE_SIZE = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 const WG_N_SG_TILE_SIZE = SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
-const TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * SUBGROUP_SIZE;
+const TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * MAX_SUBGROUP_SIZE;
 const TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 const TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
@@ -164,7 +169,7 @@ const SHMEM_SIZE = max(TILE_SRC0_SHMEM + TILE_SRC1_SHMEM, SG_MAT_ACCUM_SHMEM);
 var<workgroup> shmem: array<f16, SHMEM_SIZE>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
+fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
         @builtin(local_invocation_id) local_id: vec3<u32>,
         @builtin(subgroup_id) subgroup_id: u32) {
 
@@ -172,15 +177,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let subgroup_m = subgroup_id % SUBGROUP_M;
     let subgroup_n = subgroup_id / SUBGROUP_M;
 
-    let wg_linear = global_id.x / TOTAL_WORKGROUP_SIZE;
-
     let wg_m_count = (params.m + WG_M_SG_TILE_SIZE - 1) / WG_M_SG_TILE_SIZE;
     let wg_n_count = (params.n + WG_N_SG_TILE_SIZE - 1) / WG_N_SG_TILE_SIZE;
     let wg_per_matrix = wg_m_count * wg_n_count;
 
-    let batch_idx = wg_linear / wg_per_matrix;
+    let batch_idx = wg_id.x / wg_per_matrix;
 
-    let wg_in_batch = wg_linear % wg_per_matrix;
+    let wg_in_batch = wg_id.x % wg_per_matrix;
     let wg_m = wg_in_batch % wg_m_count;
     let wg_n = wg_in_batch / wg_m_count;
 
@@ -230,29 +233,32 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
         workgroupBarrier();
 
-        for (var k_inner = 0u; k_inner < TILE_K; k_inner += SUBGROUP_MATRIX_K_SIZE) {
+        if (subgroup_id < EXPECTED_SUBGROUPS) {
 
-            let src0_shmem_idx_base = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE * TILE_K + k_inner;
-            var src0_sg_mats: array<subgroup_matrix_left<f16, SUBGROUP_MATRIX_K_SIZE, SUBGROUP_MATRIX_M_SIZE>, SUBGROUP_MATRIX_M>;
-            for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-                src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f16, SUBGROUP_MATRIX_K_SIZE, SUBGROUP_MATRIX_M_SIZE>>(
-                    &shmem,
-                    src0_shmem_idx_base + m * SUBGROUP_MATRIX_M_SIZE * TILE_K,
-                    false,
-                    TILE_K
-                );
-            }
+            for (var k_inner = 0u; k_inner < TILE_K; k_inner += SUBGROUP_MATRIX_K_SIZE) {
 
-            let src1_shmem_idx_base = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE * TILE_K + k_inner;
-            for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
-                let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f16, SUBGROUP_MATRIX_N_SIZE, SUBGROUP_MATRIX_K_SIZE>>(
-                    &shmem,
-                    TILE_SRC0_SHMEM + src1_shmem_idx_base + n * SUBGROUP_MATRIX_N_SIZE * TILE_K,
-                    true,
-                    TILE_K
-                );
+                let src0_shmem_idx_base = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE * TILE_K + k_inner;
+                var src0_sg_mats: array<subgroup_matrix_left<f16, SUBGROUP_MATRIX_K_SIZE, SUBGROUP_MATRIX_M_SIZE>, SUBGROUP_MATRIX_M>;
                 for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-                    acc_sg_mat[m][n] = subgroupMatrixMultiplyAccumulate(src0_sg_mats[m], src1_sg_mat, acc_sg_mat[m][n]);
+                    src0_sg_mats[m] = subgroupMatrixLoad<subgroup_matrix_left<f16, SUBGROUP_MATRIX_K_SIZE, SUBGROUP_MATRIX_M_SIZE>>(
+                        &shmem,
+                        src0_shmem_idx_base + m * SUBGROUP_MATRIX_M_SIZE * TILE_K,
+                        false,
+                        TILE_K
+                    );
+                }
+
+                let src1_shmem_idx_base = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE * TILE_K + k_inner;
+                for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
+                    let src1_sg_mat = subgroupMatrixLoad<subgroup_matrix_right<f16, SUBGROUP_MATRIX_N_SIZE, SUBGROUP_MATRIX_K_SIZE>>(
+                        &shmem,
+                        TILE_SRC0_SHMEM + src1_shmem_idx_base + n * SUBGROUP_MATRIX_N_SIZE * TILE_K,
+                        true,
+                        TILE_K
+                    );
+                    for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+                        acc_sg_mat[m][n] = subgroupMatrixMultiplyAccumulate(src0_sg_mats[m], src1_sg_mat, acc_sg_mat[m][n]);
+                    }
                 }
             }
         }
@@ -268,12 +274,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     let tile_row_base_local = subgroup_n * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
     let tile_col_base_local = subgroup_m * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 
-    for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
-        for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
-            let local_row = tile_row_base_local + n * SUBGROUP_MATRIX_N_SIZE;
-            let local_col = tile_col_base_local + m * SUBGROUP_MATRIX_M_SIZE;
-            let out_base = local_row * WG_TILE_STRIDE + local_col;
-            subgroupMatrixStore(&shmem, out_base, acc_sg_mat[m][n], true, WG_TILE_STRIDE);
+    if (subgroup_id < EXPECTED_SUBGROUPS) { // 2-5% performance hit :(
+        for (var n = 0u; n < SUBGROUP_MATRIX_N; n++) {
+            for (var m = 0u; m < SUBGROUP_MATRIX_M; m++) {
+                let local_row = tile_row_base_local + n * SUBGROUP_MATRIX_N_SIZE;
+                let local_col = tile_col_base_local + m * SUBGROUP_MATRIX_M_SIZE;
+                let out_base = local_row * WG_TILE_STRIDE + local_col;
+                subgroupMatrixStore(&shmem, out_base, acc_sg_mat[m][n], true, WG_TILE_STRIDE);
+            }
         }
     }
 

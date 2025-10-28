@@ -1755,7 +1755,7 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
 
     if (webgpu_ctx->supports_subgroup_matrix) {
         std::vector<std::pair<std::string, std::string>> sg_matrix_repls;
-        sg_matrix_repls.emplace_back("WEBGPU_SUBGROUP_SIZE", std::to_string(webgpu_ctx->subgroup_size));
+        sg_matrix_repls.emplace_back("WEBGPU_MAX_SUBGROUP_SIZE", std::to_string(webgpu_ctx->subgroup_size));
         sg_matrix_repls.emplace_back("WEBGPU_TILE_K", std::to_string(WEBGPU_MUL_MAT_TILE_K));
         sg_matrix_repls.emplace_back("WEBGPU_SUBGROUP_M", std::to_string(WEBGPU_MUL_MAT_SUBGROUP_M));
         sg_matrix_repls.emplace_back("WEBGPU_SUBGROUP_N", std::to_string(WEBGPU_MUL_MAT_SUBGROUP_N));
@@ -2398,7 +2398,7 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     // Unfortunately, WebGPU allows info.subgroup{Min/Max}Size to be different, and even on devices
     // where it is consistent, e.g., Apple M-series GPUs, the min/max sizes report different values.
     // Therefore, hardcoding the subgroup size to 32 for now for development.
-    ctx->subgroup_size = 32;
+    ctx->subgroup_size = info.subgroupMaxSize;
     ctx->supports_subgroup_matrix =
         valid_subgroup_matrix_config && ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
 
@@ -2406,6 +2406,7 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     std::vector<wgpu::FeatureName> required_features = { wgpu::FeatureName::ShaderF16,
                                                          wgpu::FeatureName::ImplicitDeviceSynchronization };
     if (ctx->supports_subgroup_matrix) {
+        required_features.push_back(wgpu::FeatureName::Subgroups);
         required_features.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
     }
 
