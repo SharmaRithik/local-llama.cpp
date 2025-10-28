@@ -2374,7 +2374,9 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 
     wgpu::AdapterInfo                            info{};
     wgpu::AdapterPropertiesSubgroupMatrixConfigs subgroup_matrix_configs{};
-    info.nextInChain = &subgroup_matrix_configs;
+    if (ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix)) {
+        info.nextInChain = &subgroup_matrix_configs;
+    }
     ctx->adapter.GetInfo(&info);
 
     wgpu::SupportedFeatures features;
@@ -2384,22 +2386,23 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 
     // Only support square f16 matrices of size 8 or 16 for now
     bool valid_subgroup_matrix_config = false;
-    for (size_t i = 0; i < subgroup_matrix_configs.configCount; i++) {
-        const wgpu::SubgroupMatrixConfig config = subgroup_matrix_configs.configs[i];
-        if (config.M == config.N && config.N == config.K && (config.K == 8 || config.K == 16) &&
-            config.componentType == wgpu::SubgroupMatrixComponentType::F16 &&
-            config.resultComponentType == wgpu::SubgroupMatrixComponentType::F16) {
-            ctx->subgroup_matrix_config  = config;
-            valid_subgroup_matrix_config = true;
-            break;
+    if (ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix)) {
+        for (size_t i = 0; i < subgroup_matrix_configs.configCount; i++) {
+            const wgpu::SubgroupMatrixConfig config = subgroup_matrix_configs.configs[i];
+            if (config.M == config.N && config.N == config.K && (config.K == 8 || config.K == 16) &&
+                config.componentType == wgpu::SubgroupMatrixComponentType::F16 &&
+                config.resultComponentType == wgpu::SubgroupMatrixComponentType::F16) {
+                ctx->subgroup_matrix_config  = config;
+                valid_subgroup_matrix_config = true;
+                break;
+            }
         }
     }
 
     // For subgroup matrix code to be the most efficient, we would like the subgroup size to be consistent and accurate.
     // Unfortunately, that is not possible, so we use the maximum subgroup size reported by the adapter.
     ctx->subgroup_size = info.subgroupMaxSize;
-    ctx->supports_subgroup_matrix =
-        valid_subgroup_matrix_config && ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
+    ctx->supports_subgroup_matrix = valid_subgroup_matrix_config;
 
     // Initialize device
     std::vector<wgpu::FeatureName> required_features = { wgpu::FeatureName::ShaderF16,
