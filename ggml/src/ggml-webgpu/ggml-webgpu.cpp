@@ -2394,10 +2394,9 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
             break;
         }
     }
-    // For subgroup matrix code to be workable, we really need a consistent subgroup size.
-    // Unfortunately, WebGPU allows info.subgroup{Min/Max}Size to be different, and even on devices
-    // where it is consistent, e.g., Apple M-series GPUs, the min/max sizes report different values.
-    // Therefore, hardcoding the subgroup size to 32 for now for development.
+
+    // For subgroup matrix code to be the most efficient, we would like the subgroup size to be consistent and accurate.
+    // Unfortunately, that is not possible, so we use the maximum subgroup size reported by the adapter.
     ctx->subgroup_size = info.subgroupMaxSize;
     ctx->supports_subgroup_matrix =
         valid_subgroup_matrix_config && ctx->adapter.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
