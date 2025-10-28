@@ -169,7 +169,8 @@ jobs:
           curl -L -o artifact.zip \
             "https://github.com/${DAWN_OWNER}/${DAWN_REPO}/releases/download/${DAWN_VERSION}/${DAWN_ASSET_NAME}"
           mkdir dawn
-          unzip artifact.zip -d dawn
+          unzip artifact.zip
+          tar -xvf Dawn-5e9a4865b1635796ccc77dd30057f2b4002a1355-macos-latest-Release.tar.gz -C dawn --strip-components=1
 
       - name: Build
         id: cmake_build
@@ -529,7 +530,8 @@ jobs:
           curl -L -o artifact.zip \
             "https://github.com/${DAWN_OWNER}/${DAWN_REPO}/releases/download/${DAWN_VERSION}/${DAWN_ASSET_NAME}"
           mkdir dawn
-          unzip artifact.zip -d dawn
+          unzip artifact.zip
+          tar -xvf Dawn-5e9a4865b1635796ccc77dd30057f2b4002a1355-ubuntu-latest-Release.tar.gz -C dawn --strip-components=1
 
       - name: Build
         id: cmake_build
