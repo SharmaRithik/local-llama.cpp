@@ -6,6 +6,7 @@
       "SRC0_TYPE" : "vec4<f32>",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
     "DECLS": ["SHMEM_VEC"]
@@ -16,6 +17,7 @@
       "SRC0_TYPE" : "f32",
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
     "DECLS": ["SHMEM_SCALAR"]
@@ -26,6 +28,7 @@
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
     "DECLS": ["SHMEM_VEC"]
@@ -36,6 +39,7 @@
       "SRC0_TYPE" : "f16",
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
     "DECLS": ["SHMEM_SCALAR"]
@@ -46,6 +50,7 @@
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f16>",
       "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
     "DECLS": ["SHMEM_VEC"]
@@ -56,6 +61,7 @@
       "SRC0_TYPE" : "f16",
       "SRC1_TYPE" : "f16",
       "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
     "DECLS": ["SHMEM_SCALAR"]
@@ -67,26 +73,11 @@
 #define(DECLS)
 
 #decl(SHMEM_VEC)
-fn zero_val_src0() -> {{SRC0_TYPE}} {
-    return {{SRC0_TYPE}}(0.0, 0.0, 0.0, 0.0);
-}
-
-fn store_src0_shmem(val: {{SRC0_TYPE}}, idx: u32) {
-    shmem[idx] = f16(val.x);
-    shmem[idx + 1] = f16(val.y);
-    shmem[idx + 2] = f16(val.z);
-    shmem[idx + 3] = f16(val.w);
-}
-
-fn zero_val_src1() -> {{SRC1_TYPE}} {
-    return {{SRC1_TYPE}}(0.0, 0.0, 0.0, 0.0);
-}
-
-fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
-    shmem[idx] = f16(val.x);
-    shmem[idx + 1] = f16(val.y);
-    shmem[idx + 2] = f16(val.z);
-    shmem[idx + 3] = f16(val.w);
+fn store_shmem(val: vec4<f16>, idx: u32) {
+    shmem[idx] = val.x;
+    shmem[idx + 1] = val.y;
+    shmem[idx + 2] = val.z;
+    shmem[idx + 3] = val.w;
 }
 
 fn store_dst(shmem_idx: u32, dst_idx: u32) {
@@ -100,20 +91,8 @@ fn store_dst(shmem_idx: u32, dst_idx: u32) {
 #enddecl(SHMEM_VEC)
 
 #decl(SHMEM_SCALAR)
-fn zero_val_src0() -> {{SRC0_TYPE}} {
-    return 0.0;
-}
-
-fn store_src0_shmem(val: {{SRC0_TYPE}}, idx: u32) {
-    shmem[idx] = f16(val);
-}
-
-fn zero_val_src1() -> {{SRC1_TYPE}} {
-    return 0.0;
-}
-
-fn store_src1_shmem(val: {{SRC1_TYPE}}, idx: u32) {
-    shmem[idx] = f16(val);
+fn store_shmem(val: f16, idx: u32) {
+    shmem[idx] = val;
 }
 
 fn store_dst(shmem_idx: u32, dst_idx: u32) {
@@ -182,9 +161,7 @@ const SG_MAT_ACCUM_SHMEM = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_N * SUBGROU
 // We reuse shmem for accumulation matrices
 const SHMEM_SIZE = max(TILE_SRC0_SHMEM + TILE_SRC1_SHMEM, SG_MAT_ACCUM_SHMEM);
 
-// Note: apparently current dawn doesn't like override constant shared memory size along with subgroup matrix loads
 var<workgroup> shmem: array<f16, SHMEM_SIZE>;
-//var<workgroup> shmem: array<f16, 3072>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
@@ -231,10 +208,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
             let global_k = k_outer + tile_k;
             let src0_idx = src0_batch_offset + global_m * params.stride_01 + global_k;
             let src0_val = select( // taking a slight performance hit to avoid oob
-                zero_val_src0(),
+                {{SRC0_TYPE}}(0.0),
                 src0[src0_idx/{{VEC_SIZE}}],
                 global_m < params.m && global_k < params.k);
-            store_src0_shmem(src0_val, elem_idx);
+            store_shmem({{SHMEM_TYPE}}(src0_val), elem_idx);
         }
 
         for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC1_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
@@ -245,10 +222,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
 
             let src1_idx = src1_batch_offset + global_n * params.stride_11 + global_k;
             let src1_val = select(
-                zero_val_src1(),
+                {{SRC1_TYPE}}(0.0),
                 src1[src1_idx/{{VEC_SIZE}}],
                 global_n < params.n && global_k < params.k);
-            store_src1_shmem(src1_val, TILE_SRC0_SHMEM + elem_idx);
+            store_shmem({{SHMEM_TYPE}}(src1_val), TILE_SRC0_SHMEM + elem_idx);
         }
 
         workgroupBarrier();
@@ -284,7 +261,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
     }
 
     let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;
-
 
     // Stage the subgroup matrix tiles into shared memory
     // This uses WG_M_SG_TILE_SIZE as the stride (number of columns in the workgroup tile).

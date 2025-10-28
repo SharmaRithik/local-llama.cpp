@@ -74,16 +74,16 @@
 // For operations which process a row in parallel, this seems like a reasonable default
 #define WEBGPU_ROW_SPLIT_WG_SIZE 64
 
-// Matrix multiplication fast path parameters
+// Matrix multiplication parameters
 
-// Warning: must match values in mul_mat_fast.wgsl
-#define WEBGPU_MUL_MAT_TILE_M 4
-#define WEBGPU_MUL_MAT_TILE_N 4
-
+// Register tiling parameters
+#define WEBGPU_MUL_MAT_TILE_M    4
+#define WEBGPU_MUL_MAT_TILE_N    4
 #define WEBGPU_MUL_MAT_WG_SIZE_M 16
 #define WEBGPU_MUL_MAT_WG_SIZE_N 8
 #define WEBGPU_MUL_MAT_TILE_K    32
 
+// Subgroup matrix parameters
 // The number of subgroups in the M dimension
 #define WEBGPU_MUL_MAT_SUBGROUP_M        2
 // The number of subgroups in the N dimension
@@ -92,7 +92,7 @@
 #define WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M 4
 #define WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N 2
 
-// GEMV constants
+// gemv parameters
 #define WEBGPU_GEMV_WG_SIZE        256
 // Must be multiple of 4 to work with vectorized paths, and must divide gemv wg size
 #define WEBGPU_GEMV_OUTPUTS_PER_WG 16
@@ -948,60 +948,37 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
         (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
     uint32_t wg_y = 1;
 
-    bool use_gemv = false;
-    if (dst->ne[1] == 1) {
-        switch (src1->type) {
-            case GGML_TYPE_F16:
-                use_gemv = (src0->type == GGML_TYPE_F16);
-                break;
-            case GGML_TYPE_F32:
-                switch (src0->type) {
-                    case GGML_TYPE_F32:
-                    case GGML_TYPE_F16:
-                        use_gemv = true;
-                        break;
-                    default:
-                        break;
-                }
-            default:
-                break;
-        }
+    bool use_fast = false;
+    switch (src1->type) {
+        case GGML_TYPE_F16:
+            use_fast = (src0->type == GGML_TYPE_F16);
+            break;
+        case GGML_TYPE_F32:
+            switch (src0->type) {
+                case GGML_TYPE_F32:
+                case GGML_TYPE_F16:
+                    use_fast = true;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        default:
+            break;
     }
 
-    if (use_gemv) {
-        uint32_t batches       = dst->ne[2] * dst->ne[3];
-        uint32_t output_groups = (dst->ne[0] + WEBGPU_GEMV_OUTPUTS_PER_WG - 1) / WEBGPU_GEMV_OUTPUTS_PER_WG;
-        uint32_t total_wg      = output_groups * batches;
-        wg_x                   = total_wg % ctx->limits.maxComputeWorkgroupsPerDimension;
-        wg_y                   = (total_wg + ctx->limits.maxComputeWorkgroupsPerDimension - 1) /
-               ctx->limits.maxComputeWorkgroupsPerDimension;
-        int vectorized = src0->ne[0] % 4 == 0 && src1->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0;
-        pipeline       = ctx->gemv_pipelines[src0->type][src1->type][vectorized];
-
-    } else {
-        bool use_fast = false;
-        switch (src1->type) {
-            case GGML_TYPE_F16:
-                use_fast = (src0->type == GGML_TYPE_F16);
-                break;
-            case GGML_TYPE_F32:
-                switch (src0->type) {
-                    case GGML_TYPE_F32:
-                    case GGML_TYPE_F16:
-                        use_fast = true;
-                        break;
-                    default:
-                        break;
-                }
-                break;
-            default:
-                break;
-        }
-
-        if (use_fast) {
-            int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
-            pipeline       = ctx->mul_mat_pipelines[src0->type][src1->type][vectorized];
-
+    if (use_fast) {
+        int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
+        if (dst->ne[1] == 1) {
+            pipeline               = ctx->gemv_pipelines[src0->type][src1->type][vectorized];
+            uint32_t batches       = dst->ne[2] * dst->ne[3];
+            uint32_t output_groups = (dst->ne[0] + WEBGPU_GEMV_OUTPUTS_PER_WG - 1) / WEBGPU_GEMV_OUTPUTS_PER_WG;
+            uint32_t total_wg      = output_groups * batches;
+            wg_x                   = total_wg % ctx->limits.maxComputeWorkgroupsPerDimension;
+            wg_y                   = (total_wg + ctx->limits.maxComputeWorkgroupsPerDimension - 1) /
+                   ctx->limits.maxComputeWorkgroupsPerDimension;
+        } else {
+            pipeline = ctx->mul_mat_pipelines[src0->type][src1->type][vectorized];
             uint32_t wg_m;
             uint32_t wg_n;
             if (ctx->supports_subgroup_matrix) {
@@ -2399,17 +2376,6 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     wgpu::AdapterPropertiesSubgroupMatrixConfigs subgroup_matrix_configs{};
     info.nextInChain = &subgroup_matrix_configs;
     ctx->adapter.GetInfo(&info);
-
-    // print configs
-    for (int i = 0; i < subgroup_matrix_configs.configCount; i++) {
-        const wgpu::SubgroupMatrixConfig config = subgroup_matrix_configs.configs[i];
-        std::cout << "ggml_webgpu: Subgroup Matrix Config " << i << ":\n";
-        std::cout << " M: " << config.M << "\n";
-        std::cout << " N: " << config.N << "\n";
-        std::cout << " K: " << config.K << "\n";
-        std::cout << " Component Type: " << static_cast<int>(config.componentType) << "\n";
-        std::cout << " Result Type: " << static_cast<int>(config.resultComponentType) << "\n";
-    }
 
     wgpu::SupportedFeatures features;
     ctx->adapter.GetFeatures(&features);
