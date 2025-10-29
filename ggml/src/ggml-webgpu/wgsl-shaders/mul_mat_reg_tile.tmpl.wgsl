@@ -158,8 +158,8 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     let wg_m = wg_in_batch % wg_m_count;
     let wg_n = wg_in_batch / wg_m_count;
 
-    let output_row_base = wg_n * WORKGROUP_SIZE_N * TILE_N + local_n * TILE_N;
-    let output_col_base = wg_m * WORKGROUP_SIZE_M * TILE_M + local_m * TILE_M;
+    let output_row_base = wg_m * WORKGROUP_SIZE_M * TILE_M + local_m * TILE_M;
+    let output_col_base = wg_n * WORKGROUP_SIZE_N * TILE_N + local_n * TILE_N;
 
     let dst2_stride = params.m * params.n;
     let dst3_stride = dst2_stride * params.bs02 * params.broadcast2;
@@ -230,12 +230,12 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;
 
     for (var tn = 0u; tn < TILE_N; tn++) {
-        let global_row = output_row_base + tn;
-        if (global_row < params.n) {
+        let global_col = output_col_base + tn;
+        if (global_col < params.n) {
             for (var tm = 0u; tm < TILE_M; tm += {{VEC_SIZE}}) {
-                let global_col = output_col_base + tm;
-                if (global_col < params.m) {
-                    let dst_idx = dst_batch_offset + global_row * params.m + global_col;
+                let global_row = output_row_base + tm;
+                if (global_row < params.m) {
+                    let dst_idx = dst_batch_offset + global_col * params.m + global_row;
                     dst[dst_idx/{{VEC_SIZE}}] = store_val(acc, tn, tm);
                 }
             }

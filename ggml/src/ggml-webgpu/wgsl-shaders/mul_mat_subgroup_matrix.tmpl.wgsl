@@ -291,18 +291,18 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     let tile_rows = WG_N_SG_TILE_SIZE;
     let tile_cols = WG_M_SG_TILE_SIZE;
     let total_tile_elems = tile_rows * tile_cols;
-    let tile_dst_row_base = wg_n * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
-    let tile_dst_col_base = wg_m * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+    let tile_dst_row_base = wg_m * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
+    let tile_dst_col_base = wg_n * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
     for (var idx = thread_id * {{VEC_SIZE}}; idx < total_tile_elems; idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
-        let local_row = idx / WG_TILE_STRIDE;
-        let local_col = idx % WG_TILE_STRIDE;
+        let local_row = idx % WG_TILE_STRIDE;
+        let local_col = idx / WG_TILE_STRIDE;
 
         let global_row = tile_dst_row_base + local_row;
         let global_col = tile_dst_col_base + local_col;
 
-        if (global_row < params.n && global_col < params.m) {
-            let dst_idx = dst_batch_offset + global_row * params.m + global_col;
+        if (global_col < params.n && global_row < params.m) {
+            let dst_idx = dst_batch_offset + global_col * params.m + global_row;
             store_dst(idx, dst_idx/{{VEC_SIZE}});
         }
     }

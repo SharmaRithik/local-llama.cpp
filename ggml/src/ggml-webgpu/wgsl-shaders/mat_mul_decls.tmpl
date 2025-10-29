@@ -1,0 +1,19 @@
+#decl(LD_SHMEM)
+
+fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u32) {
+    for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC0_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
+        let tile_m = elem_idx / TILE_K;
+        let tile_k = elem_idx % TILE_K;
+        let global_m = offset_m + tile_m;
+        let global_k = k_outer + tile_k;
+        let src0_idx = batch_offset + global_m * params.stride_01 + global_k;
+        let src0_val = select( // taking a slight performance hit to avoid oob
+            {{SRC0_TYPE}}(0.0),
+            src0[src0_idx/{{VEC_SIZE}}],
+            global_m < params.m && global_k < params.k);
+        store_shmem({{SHMEM_TYPE}}(src0_val), elem_idx);
+    }
+}
+
+#enddecl(LD_SHMEM)
+
