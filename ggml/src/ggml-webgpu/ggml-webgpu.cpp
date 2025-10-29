@@ -2356,7 +2356,13 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 
     webgpu_context ctx = reg_ctx->webgpu_ctx;
 
+    // TODO: track need for these toggles: https://issues.chromium.org/issues/42251215
+    const char * const adapterEnabledToggles[]  = { "vulkan_enable_f16_on_nvidia", "use_vulkan_memory_model" };
+    wgpu::DawnTogglesDescriptor adapterTogglesDesc;
+    adapterTogglesDesc.enabledToggles      = adapterEnabledToggles;
+    adapterTogglesDesc.enabledToggleCount  = 2;
     wgpu::RequestAdapterOptions options = {};
+    options.nextInChain = &adapterTogglesDesc;
     ctx->instance.WaitAny(ctx->instance.RequestAdapter(
                               &options, wgpu::CallbackMode::AllowSpontaneous,
                               [&ctx](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, const char * message) {
