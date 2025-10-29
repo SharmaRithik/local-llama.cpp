@@ -1,4 +1,32 @@
-#decl(LD_SHMEM)
+#decl(SHMEM_VEC)
+fn store_shmem(val: vec4<f16>, idx: u32) {
+    shmem[idx] = val.x;
+    shmem[idx + 1] = val.y;
+    shmem[idx + 2] = val.z;
+    shmem[idx + 3] = val.w;
+}
+
+fn store_dst(shmem_idx: u32, dst_idx: u32) {
+    dst[dst_idx] = vec4<f32>(
+        f32(shmem[shmem_idx]),
+        f32(shmem[shmem_idx + 1]),
+        f32(shmem[shmem_idx + 2]),
+        f32(shmem[shmem_idx + 3])
+    );
+}
+#enddecl(SHMEM_VEC)
+
+#decl(SHMEM_SCALAR)
+fn store_shmem(val: f16, idx: u32) {
+    shmem[idx] = val;
+}
+
+fn store_dst(shmem_idx: u32, dst_idx: u32) {
+    dst[dst_idx] = f32(shmem[shmem_idx]);
+}
+#enddecl(SHMEM_SCALAR)
+
+#decl(INIT_SHMEM_FLOAT)
 
 fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u32) {
     for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC0_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
@@ -15,5 +43,20 @@ fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u3
     }
 }
 
-#enddecl(LD_SHMEM)
+fn init_shmem_src1(thread_id: u32, batch_offset: u32, offset_n: u32, k_outer: u32) {
+    for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC1_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
+        let tile_n = elem_idx / TILE_K;
+        let tile_k = elem_idx % TILE_K;
+        let global_n = offset_n + tile_n;
+        let global_k = k_outer + tile_k;
+        let src1_idx = batch_offset + global_n * params.stride_11 + global_k;
+        let src1_val = select(
+            {{SRC1_TYPE}}(0.0),
+            src1[src1_idx/{{VEC_SIZE}}],
+            global_n < params.n && global_k < params.k);
+        store_shmem({{SHMEM_TYPE}}(src1_val), TILE_SRC0_SHMEM + elem_idx);
+    }
+}
+
+#enddecl(INIT_SHMEM_FLOAT)
 

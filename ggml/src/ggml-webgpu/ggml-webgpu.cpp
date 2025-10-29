@@ -77,9 +77,9 @@
 // Matrix multiplication parameters
 
 // Register tiling parameters
-#define WEBGPU_MUL_MAT_TILE_M    4
-#define WEBGPU_MUL_MAT_TILE_N    4
-#define WEBGPU_MUL_MAT_WG_SIZE_M 16
+#define WEBGPU_MUL_MAT_TILE_M    8
+#define WEBGPU_MUL_MAT_TILE_N    8
+#define WEBGPU_MUL_MAT_WG_SIZE_M 8
 #define WEBGPU_MUL_MAT_WG_SIZE_N 8
 #define WEBGPU_MUL_MAT_TILE_K    32
 

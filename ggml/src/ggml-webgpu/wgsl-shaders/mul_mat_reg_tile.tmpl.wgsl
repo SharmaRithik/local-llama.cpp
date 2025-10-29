@@ -6,9 +6,10 @@
       "SRC0_TYPE" : "vec4<f32>",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
-    "DECLS": ["VEC"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f32_f32",
@@ -16,9 +17,10 @@
       "SRC0_TYPE" : "f32",
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
-    "DECLS": ["SCALAR"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f32_vec",
@@ -26,9 +28,10 @@
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
-    "DECLS": ["VEC"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f32",
@@ -36,9 +39,10 @@
       "SRC0_TYPE" : "f16",
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
-    "DECLS": ["SCALAR"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f16_vec",
@@ -46,9 +50,10 @@
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f16>",
       "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
-    "DECLS": ["VEC"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f16",
@@ -56,9 +61,10 @@
       "SRC0_TYPE" : "f16",
       "SRC1_TYPE" : "f16",
       "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
-    "DECLS": ["SCALAR"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
   }
 ]
 
@@ -67,22 +73,14 @@
 #define(DECLS)
 
 #decl(VEC)
-fn store_val(acc: array<array<f32, TILE_N>, TILE_M>, tn: u32, tm: u32) -> vec4<f32> {
-    return vec4<f32>(acc[tm][tn], acc[tm + 1][tn], acc[tm + 2][tn], acc[tm + 3][tn]);
-}
-
-fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
-    return dot(vec4<f32>(src0_val), vec4<f32>(src1_val));
+fn store_val(acc: array<array<f16, TILE_N>, TILE_M>, tn: u32, tm: u32) -> vec4<f32> {
+    return vec4<f32>(f32(acc[tm][tn]), f32(acc[tm + 1][tn]), f32(acc[tm + 2][tn]), f32(acc[tm + 3][tn]));
 }
 #enddecl(VEC)
 
 #decl(SCALAR)
-fn store_val(acc: array<array<f32, TILE_N>, TILE_M>, tn: u32, tm: u32) -> f32 {
-    return acc[tm][tn];
-}
-
-fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
-    return f32(src0_val) * f32(src1_val);
+fn store_val(acc: array<array<f16, TILE_N>, TILE_M>, tn: u32, tm: u32) -> f32 {
+    return f32(acc[tm][tn]);
 }
 #enddecl(SCALAR)
 
@@ -137,8 +135,7 @@ override TOTAL_WORKGROUP_SIZE = WORKGROUP_SIZE_M * WORKGROUP_SIZE_N;
 override TILE_SRC0_SHMEM = TILE_K * WORKGROUP_SIZE_M * TILE_M;
 override TILE_SRC1_SHMEM = TILE_K * WORKGROUP_SIZE_N * TILE_N;
 
-var<workgroup> src0_shmem: array<{{SRC0_TYPE}}, TILE_SRC0_SHMEM/{{VEC_SIZE}}>;
-var<workgroup> src1_shmem: array<{{SRC1_TYPE}}, TILE_SRC1_SHMEM/{{VEC_SIZE}}>;
+var<workgroup> shmem: array<f16, TILE_SRC0_SHMEM + TILE_SRC1_SHMEM>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
@@ -174,52 +171,34 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     let src0_batch_offset = params.offset_src0 + src03_idx * params.stride_03 + src02_idx * params.stride_02;
     let src1_batch_offset = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12;
 
-    var acc: array<array<f32, TILE_N>, TILE_M>;
+    let offset_m = wg_m * WORKGROUP_SIZE_M * TILE_M;
+    let offset_n = wg_n * WORKGROUP_SIZE_N * TILE_N;
+
+    var acc: array<array<f16, TILE_N>, TILE_M>;
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
-        for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC0_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
-            let tile_m = elem_idx / TILE_K;
-            let tile_k = elem_idx % TILE_K;
-            let global_m = wg_m * WORKGROUP_SIZE_M * TILE_M + tile_m;
-            let global_k = k_outer + tile_k;
-            let src0_idx = src0_batch_offset + global_m * params.stride_01 + global_k;
-            src0_shmem[elem_idx/{{VEC_SIZE}}] = select( // taking a slight performance hit to avoid oob
-                {{SRC0_TYPE}}(0.0),
-                src0[src0_idx/{{VEC_SIZE}}],
-                global_m < params.m && global_k < params.k);
-        }
-
-        for (var elem_idx = thread_id * {{VEC_SIZE}}; elem_idx < TILE_SRC1_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * {{VEC_SIZE}}) {
-            let tile_n = elem_idx / TILE_K;
-            let tile_k = elem_idx % TILE_K;
-            let global_n = wg_n * WORKGROUP_SIZE_N * TILE_N + tile_n;
-            let global_k = k_outer + tile_k;
-
-            let src1_idx = src1_batch_offset + global_n * params.stride_11 + global_k;
-            src1_shmem[elem_idx/{{VEC_SIZE}}] = select(
-                {{SRC1_TYPE}}(0.0),
-                src1[src1_idx/{{VEC_SIZE}}],
-                global_n < params.n && global_k < params.k);
-            }
+        // see mat_mul_decls.tmpl
+        init_shmem_src0(thread_id, src0_batch_offset, offset_m, k_outer);
+        init_shmem_src1(thread_id, src1_batch_offset, offset_n, k_outer);
 
         workgroupBarrier();
 
         let k_end = min(TILE_K, params.k - k_outer);
 
-        for (var k_inner = 0u; k_inner < k_end; k_inner += {{VEC_SIZE}}) {
-            var src0_tile: array<{{SRC0_TYPE}}, TILE_M>;
+        for (var k_inner = 0u; k_inner < k_end; k_inner++) {
+            var src0_tile: array<f16, TILE_M>;
             for (var tm = 0u; tm < TILE_M; tm++) {
                 let src0_m = local_m * TILE_M + tm;
                 let src0_idx = k_inner + src0_m * TILE_K;
-                src0_tile[tm] = src0_shmem[src0_idx/{{VEC_SIZE}}];
+                src0_tile[tm] = shmem[src0_idx];
             }
             for (var tn = 0u; tn < TILE_N; tn++) {
                 let src1_n = local_n * TILE_N + tn;
                 let src1_idx = src1_n * TILE_K + k_inner;
-                let src1_vec = src1_shmem[src1_idx/{{VEC_SIZE}}];
+                let src1_val = shmem[TILE_SRC0_SHMEM + src1_idx];
                 for (var tm = 0u; tm < TILE_M; tm++) {
-                      acc[tm][tn] += mul_acc(src0_tile[tm], src1_vec);
+                      acc[tm][tn] += src0_tile[tm] * src1_val;
                 }
             }
         }
