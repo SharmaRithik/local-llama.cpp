@@ -9,7 +9,7 @@
       "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
-    "DECLS": ["SHMEM_VEC", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f32_f32",
@@ -20,7 +20,7 @@
       "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
-    "DECLS": ["SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f32_vec",
@@ -31,7 +31,7 @@
       "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
-    "DECLS": ["SHMEM_VEC", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f32",
@@ -42,7 +42,7 @@
       "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
-    "DECLS": ["SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f16_vec",
@@ -53,7 +53,7 @@
       "SHMEM_TYPE" : "vec4<f16>",
       "VEC_SIZE" : "4",
     },
-    "DECLS": ["SHMEM_VEC", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f16",
@@ -64,11 +64,33 @@
       "SHMEM_TYPE" : "f16",
       "VEC_SIZE" : "1",
     },
-    "DECLS": ["SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
   }
 ]
 
 #end(VARIANTS)
+
+#define(DECLS)
+
+#decl(VEC)
+fn store_dst(shmem_idx: u32, dst_idx: u32) {
+    dst[dst_idx] = vec4<f32>(
+        f32(shmem[shmem_idx]),
+        f32(shmem[shmem_idx + 1]),
+        f32(shmem[shmem_idx + 2]),
+        f32(shmem[shmem_idx + 3])
+    );
+}
+#enddecl(VEC)
+
+#decl(SCALAR)
+fn store_dst(shmem_idx: u32, dst_idx: u32) {
+    dst[dst_idx] = f32(shmem[shmem_idx]);
+}
+#enddecl(SCALAR)
+
+
+#end(DECLS)
 
 #define(SHADER)
 diagnostic(off, chromium.subgroup_matrix_uniformity);

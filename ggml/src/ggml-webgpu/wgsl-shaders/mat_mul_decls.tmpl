@@ -5,24 +5,11 @@ fn store_shmem(val: vec4<f16>, idx: u32) {
     shmem[idx + 2] = val.z;
     shmem[idx + 3] = val.w;
 }
-
-fn store_dst(shmem_idx: u32, dst_idx: u32) {
-    dst[dst_idx] = vec4<f32>(
-        f32(shmem[shmem_idx]),
-        f32(shmem[shmem_idx + 1]),
-        f32(shmem[shmem_idx + 2]),
-        f32(shmem[shmem_idx + 3])
-    );
-}
 #enddecl(SHMEM_VEC)
 
 #decl(SHMEM_SCALAR)
 fn store_shmem(val: f16, idx: u32) {
     shmem[idx] = val;
-}
-
-fn store_dst(shmem_idx: u32, dst_idx: u32) {
-    dst[dst_idx] = f32(shmem[shmem_idx]);
 }
 #enddecl(SHMEM_SCALAR)
 
