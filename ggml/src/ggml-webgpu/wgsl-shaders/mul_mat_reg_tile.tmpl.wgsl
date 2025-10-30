@@ -7,9 +7,9 @@
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
       "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : "4",
+      "VEC_SIZE" : 4,
     },
-    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
   },
   {
     "SHADER_SUFFIX": "f32_f32",
@@ -18,9 +18,9 @@
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
       "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : "1",
+      "VEC_SIZE" : 1,
     },
-    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
   },
   {
     "SHADER_SUFFIX": "f16_f32_vec",
@@ -29,9 +29,9 @@
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
       "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : "4",
+      "VEC_SIZE" : 4,
     },
-    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
   },
   {
     "SHADER_SUFFIX": "f16_f32",
@@ -40,9 +40,9 @@
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
       "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : "1",
+      "VEC_SIZE" : 1,
     },
-    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
   },
   {
     "SHADER_SUFFIX": "f16_f16_vec",
@@ -51,9 +51,9 @@
       "SRC1_TYPE" : "vec4<f16>",
       "DST_TYPE" : "vec4<f32>",
       "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : "4",
+      "VEC_SIZE" : 4,
     },
-    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
   },
   {
     "SHADER_SUFFIX": "f16_f16",
@@ -62,9 +62,31 @@
       "SRC1_TYPE" : "f16",
       "DST_TYPE" : "f32",
       "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : "1",
+      "VEC_SIZE" : 1,
     },
-    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SHMEM_FLOAT"]
+    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_0_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_0_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
   }
 ]
 

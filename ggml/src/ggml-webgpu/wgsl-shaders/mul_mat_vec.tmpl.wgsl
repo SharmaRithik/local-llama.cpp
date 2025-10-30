@@ -6,9 +6,9 @@
       "SRC0_TYPE" : "vec4<f32>",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE": "vec4<f32>",
-      "VEC_SIZE" : "4",
+      "VEC_SIZE" : 4,
     },
-    "DECLS": ["VEC"]
+    "DECLS": ["VEC", "MUL_ACC_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f32_f32",
@@ -16,9 +16,9 @@
       "SRC0_TYPE" : "f32",
       "SRC1_TYPE" : "f32",
       "DST_TYPE": "f32",
-      "VEC_SIZE" : "1",
+      "VEC_SIZE" : 1,
     },
-    "DECLS": ["SCALAR"]
+    "DECLS": ["SCALAR", "MUL_ACC_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f32_vec",
@@ -26,9 +26,9 @@
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE": "vec4<f32>",
-      "VEC_SIZE" : "4",
+      "VEC_SIZE" : 4,
     },
-    "DECLS": ["VEC"]
+    "DECLS": ["VEC", "MUL_ACC_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f32",
@@ -36,9 +36,9 @@
       "SRC0_TYPE" : "f16",
       "SRC1_TYPE" : "f32",
       "DST_TYPE": "f32",
-      "VEC_SIZE" : "1",
+      "VEC_SIZE" : 1,
     },
-    "DECLS": ["SCALAR"]
+    "DECLS": ["SCALAR", "MUL_ACC_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f16_vec",
@@ -46,9 +46,9 @@
       "SRC0_TYPE" : "vec4<f16>",
       "SRC1_TYPE" : "vec4<f16>",
       "DST_TYPE": "vec4<f32>",
-      "VEC_SIZE" : "4",
+      "VEC_SIZE" : 4,
     },
-    "DECLS": ["VEC"]
+    "DECLS": ["VEC", "MUL_ACC_FLOAT"]
   },
   {
     "SHADER_SUFFIX": "f16_f16",
@@ -56,9 +56,19 @@
       "SRC0_TYPE" : "f16",
       "SRC1_TYPE" : "f16",
       "DST_TYPE": "f32",
-      "VEC_SIZE" : "1",
+      "VEC_SIZE" : 1,
     },
-    "DECLS": ["SCALAR"]
+    "DECLS": ["SCALAR", "MUL_ACC_FLOAT"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_0_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE": "f32",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "MUL_ACC_Q4_0"]
   }
 ]
 
@@ -67,7 +77,7 @@
 #define(DECLS)
 
 #decl(VEC)
-fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
+fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
     return f32(dot({{SRC1_TYPE}}(src0_val), src1_val));
 }
 
@@ -80,7 +90,7 @@ fn store_val(group_base: u32) -> vec4<f32> {
 #enddecl(VEC)
 
 #decl(SCALAR)
-fn mul_acc(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
+fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
     return f32(src0_val) * f32(src1_val);
 }
 
@@ -88,6 +98,55 @@ fn store_val(group_base: u32) -> f32 {
     return partial_sums[group_base];
 }
 #enddecl(SCALAR)
+
+#decl(MUL_ACC_FLOAT)
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * {{VEC_SIZE}}; i < tile_size; i += THREADS_PER_OUTPUT * {{VEC_SIZE}}) {
+        let a = src0[(idx_base + k_outer + i) / {{VEC_SIZE}}];
+        let b = shared_vector[i / {{VEC_SIZE}}];
+        local_sum += inner_dot(a, b);
+    }
+    return local_sum;
+}
+
+#enddecl(MUL_ACC_FLOAT)
+
+#decl(MUL_ACC_Q4_0)
+
+const BLOCK_SIZE = 32;
+const NQ = 16u; // number of weights per thread
+const F16_PER_BLOCK = 9u; // 1 scale + 8x4 packed weights
+const WEIGHTS_PER_F16 = 4u; // 4 weights per f16
+const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
+        let blck_idx = i / BLOCK_SIZE;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let d = f32(src0[scale_idx]);
+        for (var j = 0u; j < F16_PER_THREAD; j += 2) {
+            let q_0 = src0[scale_idx + 1 + block_offset + j];
+            let q_1 = src0[scale_idx + 1 + block_offset + j + 1];
+            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+            for (var k: u32 = 0; k < 4; k++) {
+                let q_byte = get_byte(q_packed, k);
+                let q_hi = (f32((q_byte >> 4) & 0xF) - 8.0) * d;
+                let q_lo = (f32(q_byte & 0xF) - 8.0) * d;
+                local_sum += q_lo * shared_vector[shmem_idx + j * 2 + k];
+                local_sum += q_hi * shared_vector[shmem_idx + j * 2 + k + 16];
+            }
+        }
+    }
+    return local_sum;
+}
+
+#enddecl(MUL_ACC_Q4_0)
 
 #end(DECLS)
 
@@ -180,11 +239,7 @@ fn main(
         workgroupBarrier();
 
         if (output_row < params.m) {
-            for (var i = thread_in_group * {{VEC_SIZE}}; i < tile_size; i += THREADS_PER_OUTPUT * {{VEC_SIZE}}) {
-                let a = src0[(src0_idx_base + k_tile + i) / {{VEC_SIZE}}];
-                let b = shared_vector[i / {{VEC_SIZE}}];
-                local_sum += mul_acc(a, b);
-            }
+            local_sum += mul_acc(thread_in_group, tile_size, src0_idx_base, k_tile);
         }
 
         workgroupBarrier();
