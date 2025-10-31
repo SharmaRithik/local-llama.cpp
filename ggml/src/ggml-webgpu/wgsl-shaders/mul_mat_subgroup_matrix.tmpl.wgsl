@@ -218,7 +218,7 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
-        // see mat_mul_decls.tmpl
+        // see mul_mat_decls.tmpl
         init_shmem_src0(thread_id, src0_batch_offset, offset_m, k_outer);
         init_shmem_src1(thread_id, src1_batch_offset, offset_n, k_outer);
 
